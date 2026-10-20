@@ -1,0 +1,44 @@
+---
+// Day/night switch. One shape does both: the sun's rays retract while a bite
+// slides across the disc and turns it into a crescent. The page defaults to
+// day, and the choice is remembered.
+---
+
+<button id="theme-toggle" type="button" aria-label="Switch between day and night">
+	<svg viewBox="0 0 24 24" aria-hidden="true">
+		<defs>
+			<mask id="tt-bite-mask">
+				<rect x="0" y="0" width="24" height="24" fill="#fff"></rect>
+				<circle class="tt-bite" cx="24" cy="3" r="7" fill="#000"></circle>
+			</mask>
+		</defs>
+		<g class="tt-body">
+			<circle cx="12" cy="12" r="5.2" mask="url(#tt-bite-mask)"></circle>
+		</g>
+		<g class="tt-rays">
+			<line x1="12" y1="1.8" x2="12" y2="4.1"></line>
+			<line x1="12" y1="19.9" x2="12" y2="22.2"></line>
+			<line x1="1.8" y1="12" x2="4.1" y2="12"></line>
+			<line x1="19.9" y1="12" x2="22.2" y2="12"></line>
+			<line x1="4.9" y1="4.9" x2="6.5" y2="6.5"></line>
+			<line x1="17.5" y1="17.5" x2="19.1" y2="19.1"></line>
+			<line x1="4.9" y1="19.1" x2="6.5" y2="17.5"></line>
+			<line x1="17.5" y1="6.5" x2="19.1" y2="4.9"></line>
+		</g>
+	</svg>
+</button>
+
+<script>
+	const button = document.getElementById('theme-toggle');
+	button?.addEventListener('click', () => {
+		const root = document.documentElement;
+		const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+		root.dataset.theme = next;
+		try {
+			localStorage.setItem('theme', next);
+		} catch {
+			// private window: the choice simply does not persist
+		}
+		window.dispatchEvent(new CustomEvent('themechange', { detail: next }));
+	});
+</script>

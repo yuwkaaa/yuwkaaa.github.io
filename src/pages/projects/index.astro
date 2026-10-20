@@ -1,0 +1,30 @@
+---
+import Base from '../../layouts/Base.astro';
+import RepoCard from '../../components/RepoCard.astro';
+import { getRepos, splitRepos } from '../../lib/github';
+
+const { projects } = splitRepos(await getRepos());
+---
+
+<Base
+	title="Projects — yuwkaaa"
+	description="Tools and frameworks, pulled straight from GitHub at build time."
+>
+	<section class="band">
+		<div class="wrap">
+			<p class="label">built</p>
+			<h2>Projects</h2>
+			<p style="max-width:58ch;color:var(--muted);margin:-0.8rem 0 1.6rem">
+				This list is read from the GitHub API when the site is built, so it never
+				drifts from the repositories themselves.
+			</p>
+			{projects.length === 0 ? (
+				<p style="color:var(--muted)">Nothing here yet.</p>
+			) : (
+				<ul class="grid">
+					{projects.map((repo) => <li><RepoCard repo={repo} /></li>)}
+				</ul>
+			)}
+		</div>
+	</section>
+</Base>

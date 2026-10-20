@@ -1,0 +1,67 @@
+---
+import { Image } from 'astro:assets';
+import { getCollection } from 'astro:content';
+import avatar from '../assets/avatar.jpg';
+import PostCard from '../components/PostCard.astro';
+import RepoCard from '../components/RepoCard.astro';
+import Base from '../layouts/Base.astro';
+import { GITHUB_USER, SITE_DESCRIPTION, SITE_TITLE } from '../consts';
+import { getRepos, splitRepos } from '../lib/github';
+
+const posts = (await getCollection('research')).sort(
+	(a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
+);
+const { projects } = splitRepos(await getRepos());
+const cves = posts.filter((p) => p.data.kind === 'cve').length;
+---
+
+<Base title={SITE_TITLE} description={SITE_DESCRIPTION}>
+	<div class="hero">
+		<div class="wrap">
+			<div class="portrait">
+				<Image src={avatar} alt="" width={328} height={328} loading="eager" />
+			</div>
+			<div>
+				<h1>Hi, I'm <em>Nguyen Le Thanh Nam</em></h1>
+				<p class="handle">yuwkaa</p>
+				<p>
+					Web security and red teaming. I research CVEs, do bug bounty, and build
+					research frameworks.
+				</p>
+				<ul class="creds">
+					<li class="chip hot">{cves} published {cves === 1 ? 'CVE' : 'CVEs'}</li>
+					<li class="chip">Red team 1st &mdash; Dong Nai live-fire cyber drill</li>
+					<li class="chip">Red team 2nd &mdash; HCMC live-fire cyber drill</li>
+					<li class="chip">Vortex &mdash; accepted at NSS 2026</li>
+				</ul>
+				<div class="hero-links">
+					<a class="btn" href="/research/">research</a>
+					<a class="btn ghost" href="/projects/">projects</a>
+					<a class="btn ghost" href={`https://github.com/${GITHUB_USER}`}>github</a>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<section class="band">
+		<div class="wrap">
+			<p class="label">latest</p>
+			<h2>Findings and writeups</h2>
+			<ul class="grid">
+				{posts.slice(0, 4).map((post) => <li><PostCard post={post} /></li>)}
+			</ul>
+		</div>
+	</section>
+
+	{projects.length > 0 && (
+		<section class="band">
+			<div class="wrap">
+				<p class="label">built</p>
+				<h2>Projects</h2>
+				<ul class="grid">
+					{projects.slice(0, 3).map((repo) => <li><RepoCard repo={repo} /></li>)}
+				</ul>
+			</div>
+		</section>
+	)}
+</Base>

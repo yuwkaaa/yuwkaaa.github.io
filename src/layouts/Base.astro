@@ -1,0 +1,39 @@
+---
+import BaseHead from '../components/BaseHead.astro';
+import Footer from '../components/Footer.astro';
+import Header from '../components/Header.astro';
+import Scene from '../components/Scene.astro';
+
+interface Props {
+	title: string;
+	description: string;
+}
+
+const { title, description } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<BaseHead title={title} description={description} />
+	</head>
+	<body>
+		<Scene />
+		<Header />
+		<main><slot /></main>
+		<Footer />
+		<script>
+			// Click leaves a slash where the pointer landed.
+			if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+				document.addEventListener('pointerdown', (event) => {
+					const mark = document.createElement('span');
+					mark.className = 'slash';
+					mark.style.left = `${event.clientX}px`;
+					mark.style.top = `${event.clientY}px`;
+					document.body.appendChild(mark);
+					mark.addEventListener('animationend', () => mark.remove());
+				});
+			}
+		</script>
+	</body>
+</html>

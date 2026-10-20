@@ -1,0 +1,14 @@
+---
+import { GITHUB_USER } from '../consts';
+const year = new Date().getFullYear();
+---
+
+<footer class="site-foot">
+	<div class="wrap">
+		<span>NGUYEN LE THANH NAM &nbsp;/&nbsp; &copy; {year}</span>
+		<span class="foot-links">
+			<a href={`https://github.com/${GITHUB_USER}`}>github</a>
+			<a href="/rss.xml">rss</a>
+		</span>
+	</div>
+</footer>

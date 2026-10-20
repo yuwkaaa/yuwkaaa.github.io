@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # The build pipeline is the only real attack surface on a static site: both
+  # of these run code while the job holds GITHUB_TOKEN.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      astro:
+        patterns:
+          - 'astro'
+          - '@astrojs/*'
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

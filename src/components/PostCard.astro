@@ -1,0 +1,22 @@
+---
+import type { CollectionEntry } from 'astro:content';
+import FormattedDate from './FormattedDate.astro';
+
+interface Props {
+	post: CollectionEntry<'research'>;
+}
+
+const { post } = Astro.props;
+const { title, description, pubDate, kind, cve, severity, event, tags } = post.data;
+---
+
+<a class="card" href={`/research/${post.id}/`} data-kind={kind}>
+	<span class="mono">{cve ?? event ?? kind.toUpperCase()}</span>
+	<h3>{title}</h3>
+	<p>{description}</p>
+	<div class="foot">
+		{severity && <span class="chip hot">{severity}</span>}
+		{tags.slice(0, 3).map((tag) => <span class="chip">{tag}</span>)}
+		<span class="chip"><FormattedDate date={pubDate} /></span>
+	</div>
+</a>

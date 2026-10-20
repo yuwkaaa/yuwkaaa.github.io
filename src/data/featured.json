@@ -1,0 +1,36 @@
+{
+  "pin": [
+    "CVE-2026-112071",
+    "CVE-2026-113468",
+    "CVE-2026-107268",
+    "Vortex",
+    "SSReFuse"
+  ],
+  "hide": [],
+  "describe": {
+    "Vortex": "Research prototype, accepted at NSS 2026."
+  },
+  "fallback": [
+    {
+      "name": "CVE-2026-112071",
+      "description": "Unauthenticated order cancellation in TYPO3 EXT:shop",
+      "html_url": "https://github.com/yuwkaaa/CVE-2026-112071",
+      "language": "Python",
+      "stargazers_count": 0
+    },
+    {
+      "name": "CVE-2026-113468",
+      "description": "Forgeable PayPal payment callback in TYPO3 EXT:shop",
+      "html_url": "https://github.com/yuwkaaa/CVE-2026-113468",
+      "language": "Python",
+      "stargazers_count": 0
+    },
+    {
+      "name": "CVE-2026-107268",
+      "description": "miniOrange 2FA for Drupal returns the site API key to anonymous callers",
+      "html_url": "https://github.com/yuwkaaa/CVE-2026-107268",
+      "language": "Python",
+      "stargazers_count": 0
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+import PostCard from '../../components/PostCard.astro';
+import RepoCard from '../../components/RepoCard.astro';
+import { getRepos, splitRepos } from '../../lib/github';
+
+const posts = (await getCollection('research')).sort(
+	(a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
+);
+const { advisories } = splitRepos(await getRepos());
+
+// A CVE repo with no writeup yet still gets a card, so nothing goes missing.
+const written = posts.map((p) => p.data.cve).filter((c): c is string => Boolean(c));
+const orphans = advisories.filter((repo) => !written.some((cve) => repo.name.startsWith(cve)));
+---
+
+<Base title="Research — yuwkaaa" description="Published CVEs and CTF writeups.">
+	<section class="band">
+		<div class="wrap">
+			<p class="label">research</p>
+			<h2>Findings and writeups</h2>
+
+			<div class="tabs" role="tablist">
+				<button role="tab" data-filter="all" aria-selected="true">all</button>
+				<button role="tab" data-filter="cve" aria-selected="false">cve</button>
+				<button role="tab" data-filter="ctf" aria-selected="false">ctf</button>
+			</div>
+
+			<ul class="grid" id="list">
+				{posts.map((post) => <li data-kind={post.data.kind}><PostCard post={post} /></li>)}
+				{orphans.map((repo) => <li data-kind="cve"><RepoCard repo={repo} /></li>)}
+			</ul>
+		</div>
+	</section>
+
+	<script>
+		const tabs = document.querySelectorAll('.tabs button');
+		const items = document.querySelectorAll('#list > li');
+		for (const tab of tabs) {
+			tab.addEventListener('click', () => {
+				const want = (tab as HTMLElement).dataset.filter;
+				for (const other of tabs) other.setAttribute('aria-selected', String(other === tab));
+				for (const item of items) {
+					const kind = (item as HTMLElement).dataset.kind;
+					(item as HTMLElement).style.display = want === 'all' || kind === want ? '' : 'none';
+				}
+			});
+		}
+	</script>
+</Base>
