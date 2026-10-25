@@ -764,7 +764,7 @@
 		const populate = () => {
 			const rand = seeded(90210);
 
-			stars = Array.from({ length: 54 }, () => ({
+			stars = Array.from({ length: 40 }, () => ({
 				x: rand() * w,
 				y: rand() * h * 0.62,
 				r: 0.55 + rand() * 0.95,
@@ -794,7 +794,7 @@
 			// Aurora curtains. Four of them, each on its own slow period, so the
 			// band never returns to a shape it held — same rule as everything
 			// else that moves here.
-			aurora = Array.from({ length: 4 }, (_, i) => ({
+			aurora = Array.from({ length: 3 }, (_, i) => ({
 				// Higher and shallower than the first attempt: a curtain that
 				// hangs a quarter of the way down the frame is standing next to
 				// you, and aurora is 100km away.
@@ -809,14 +809,14 @@
 				weight: 0.55 + rand() * 0.45,
 			}));
 
-			swell = Array.from({ length: 5 }, (_, i) => ({
-				at: i / 5,
+			swell = Array.from({ length: 4 }, (_, i) => ({
+				at: i / 4,
 				speed: 0.000022 + rand() * 0.000016,
 				phase: rand() * Math.PI * 2,
 				weight: 0.6 + rand() * 0.5,
 			}));
 
-			moonlight = Array.from({ length: 84 }, () => ({
+			moonlight = Array.from({ length: 56 }, () => ({
 				// Biased towards the horizon, where the wave faces crowd.
 				depth: Math.pow(rand(), 0.72),
 				lateral: (rand() * 2 - 1) * (0.45 + rand() * 0.55),
@@ -1186,7 +1186,12 @@
 		};
 
 		const resize = () => {
-			const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+			// Cost here is fill rate, not draw calls: the aurora and the swell
+			// each cover the full width of the frame and are re-blended every
+			// frame, so every extra device pixel is paid for ~1.4M times a
+			// second. 1.25 keeps the curves smooth and drops the pixel count by
+			// a third against 1.5.
+			const ratio = Math.min(window.devicePixelRatio || 1, 1.25);
 			w = window.innerWidth;
 			h = window.innerHeight;
 			for (const c of [sceneCanvas, petalCanvas]) {
@@ -1197,7 +1202,7 @@
 			// viewport space and the padding is simply off-screen headroom.
 			scene.setTransform(ratio, 0, 0, ratio, PAD * ratio, PAD * ratio);
 			sky.setTransform(ratio, 0, 0, ratio, PAD * ratio, PAD * ratio);
-			petals = Array.from({ length: Math.max(24, Math.min(76, Math.round(w / 19))) }, () =>
+			petals = Array.from({ length: Math.max(20, Math.min(52, Math.round(w / 27))) }, () =>
 				spawn(false),
 			);
 			populate();
@@ -1234,7 +1239,7 @@
 			// The posts keep pushing rings out into the lake. The first version
 			// grew and shrank three rings in place, which is a loop by
 			// construction — water does not pulse, it emits and the ring leaves.
-			if (ripples.length < 20 && Math.random() < 0.07) {
+			if (ripples.length < 14 && Math.random() < 0.045) {
 				const foot = gatePos();
 				const side = Math.random() < 0.5 ? -1 : 1;
 				ripples.push({
@@ -1352,7 +1357,7 @@
 
 		const loop = (t: number) => {
 			frame = requestAnimationFrame(loop);
-			if (t - last < 33) return; // 30fps is plenty for drifting petals
+			if (t - last < 41) return; // 24fps; nothing here moves fast enough to show it
 			last = t;
 			drawPetals(t);
 		};
