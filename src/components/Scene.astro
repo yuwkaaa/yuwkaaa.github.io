@@ -38,8 +38,6 @@
 	type Bird = { lag: number; lift: number; flap: number };
 	type Ripple = { x: number; y: number; r: number; life: number; push: number };
 	type Facet = { depth: number; lateral: number; phase: number; speed: number; len: number; weight: number };
-	type Curtain = { base: number; amp: number; span: number; speed: number; phase: number; cold: number; weight: number };
-	type Swell = { at: number; speed: number; phase: number; weight: number };
 
 	type Petal = {
 		x: number;
@@ -111,17 +109,37 @@
 		};
 
 		const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+		// ?perf=1 times the two canvases on the machine actually running them.
+		// Guessing at which layer costs what has been wrong twice now.
+		const perf = new URLSearchParams(location.search).has('perf');
+		const timing = { sceneMs: 0, scenePaints: 0, skyMs: 0, skyFrames: 0, worst: 0, toriiMs: 0, canopyMs: 0 };
+		let hud: HTMLElement | null = null;
+		const report = () => {
+			if (!perf) return;
+			if (!hud) {
+				hud = document.createElement('div');
+				hud.style.cssText =
+					'position:fixed;left:12px;bottom:12px;z-index:9999;background:#000c;color:#fff;' +
+					'font:12px/1.5 ui-monospace,monospace;padding:10px 12px;white-space:pre;border-radius:6px';
+				document.body.appendChild(hud);
+			}
+			const sceneAvg = timing.scenePaints ? timing.sceneMs / timing.scenePaints : 0;
+			const skyAvg = timing.skyFrames ? timing.skyMs / timing.skyFrames : 0;
+			const per = (ms: number) => (timing.scenePaints ? ms / timing.scenePaints : 0).toFixed(1);
+			hud.textContent =
+				`still canvas : ${sceneAvg.toFixed(1)} ms x ${timing.scenePaints} paints = ${timing.sceneMs.toFixed(0)} ms\n` +
+				`  of which torii + reflection : ${per(timing.toriiMs)} ms\n` +
+				`  of which canopy (now baked) : ${per(timing.canopyMs)} ms\n` +
+				`  everything else             : ${per(timing.sceneMs - timing.toriiMs - timing.canopyMs)} ms\n` +
+				`worst paint  : ${timing.worst.toFixed(1)} ms\n` +
+				`moving canvas: ${skyAvg.toFixed(2)} ms/frame over ${timing.skyFrames} frames\n` +
+				`device pixels: ${sceneCanvas.width} x ${sceneCanvas.height}  (dpr ${(window.devicePixelRatio || 1).toFixed(2)})`;
+		};
 		const isNight = () => document.documentElement.dataset.theme === 'dark';
 
 		// Matches the 28px overhang in global.css: the parallax headroom.
 		const PAD = 28;
-		// The still scene, pre-rendered once at full day and once at full night.
-		// The crossfade then costs two drawImage calls instead of repainting a
-		// canopy of brush strokes every frame — which Firefox absorbed and
-		// Chromium did not.
-		let dayPlate: HTMLCanvasElement | null = null;
-		let nightPlate: HTMLCanvasElement | null = null;
-		let plateRatio = 1;
 		let w = 0;
 		let h = 0;
 		let mix = isNight() ? 1 : 0;
@@ -131,8 +149,6 @@
 		let clouds: Cloud[] = [];
 		let ripples: Ripple[] = [];
 		let moonlight: Facet[] = [];
-		let aurora: Curtain[] = [];
-		let swell: Swell[] = [];
 		let frame = 0;
 		let morph = 0;
 		let last = 0;
@@ -148,9 +164,6 @@
 		// was the jolt: wind feeds the chop, the chop sets the width of the
 		// moon's track, so every gust snapped the whole track to a new shape in
 		// a single frame.
-		// True while the theme crossfade runs, so the animated canvas can back
-		// off and leave the frame budget to the expensive still repaint.
-		let morphing = false;
 		let gustAim = 0;
 		let gust = 0;
 		// Where the pointer is, in viewport coordinates, and -999 when it has
@@ -176,8 +189,14 @@
 			parallaxQueued = false;
 			const fy = tiltY * 7 + scrolled * 0.025;
 			const ny = tiltY * 15 + scrolled * 0.06;
-			sceneCanvas.style.transform = `translate3d(${(tiltX * 9).toFixed(2)}px, ${fy.toFixed(2)}px, 0)`;
-			petalCanvas.style.transform = `translate3d(${(tiltX * 18).toFixed(2)}px, ${ny.toFixed(2)}px, 0)`;
+			// 2D translate, not translate3d, and no will-change anywhere. Both of
+			// those promote the canvas to its own GPU layer, and a promoted layer
+			// has to re-upload its whole texture every time the canvas is
+			// repainted — which is exactly what the theme crossfade does, fifteen
+			// times in 900ms, on two full-screen canvases. Firefox absorbed it;
+			// Chromium did not. The parallax itself works the same either way.
+			sceneCanvas.style.transform = `translate(${(tiltX * 9).toFixed(2)}px, ${fy.toFixed(2)}px)`;
+			petalCanvas.style.transform = `translate(${(tiltX * 18).toFixed(2)}px, ${ny.toFixed(2)}px)`;
 		};
 		/**
 		 * The lake is painted on the still canvas and its reflections on the
@@ -352,9 +371,9 @@
 			const cluster = (x: number, y: number, scale: number) => {
 				scene.fillStyle = petal;
 				scene.globalAlpha = lerp(0.035, 0.032, mix) * moonFade(x, y);
-				for (let i = 0; i < 5; i++) {
+				for (let i = 0; i < 3; i++) {
 					const a = rand() * Math.PI * 2;
-					const d = scale * (0.35 + rand() * 0.8);
+					const d = scale * (0.35 + rand() * 0.9);
 					scene.beginPath();
 					scene.arc(
 						x + Math.cos(a) * d,
@@ -365,7 +384,7 @@
 					);
 					scene.fill();
 				}
-				const count = 5 + Math.floor(rand() * 4);
+				const count = 3 + Math.floor(rand() * 3);
 				for (let i = 0; i < count; i++) {
 					const a = rand() * Math.PI * 2;
 					const d = Math.sqrt(rand()) * scale * 1.15;
@@ -464,6 +483,88 @@
 			scene.globalAlpha = mix * 0.11;
 			scene.fillStyle = NIGHT.ink;
 			scene.fill();
+			scene.restore();
+		};
+
+		/**
+		 * The canopy, split out so it can be baked.
+		 *
+		 * Measured on the user's machine: one repaint of the still canvas took
+		 * 14.1ms (worst 25ms) against a 16.7ms frame, and this block is ~97% of
+		 * it — every limb is a filled 22-point ribbon and every blossom is five
+		 * filled marks. It is also the one part of the scene that does not MOVE
+		 * between day and night; only its colour changes. So it gets rendered
+		 * once per theme and composited, while the mountain, the orb and the
+		 * waterline keep being redrawn so the sun still sets as the moon rises.
+		 */
+		const paintCanopy = () => {
+			const ink = blend(DAY.ink, NIGHT.ink, mix);
+			const petal = blend(DAY.petal, NIGHT.petal, mix);
+			// Sakura. One dominant bough from the top left, a lighter counterweight
+			// from the top right, and two short limbs lower down. Six equal
+			// systems made a wreath; the asymmetry is what composes the frame.
+			const reach = Math.min(w * 0.13, h * 0.2);
+			// Depth is exponential — each level roughly doubles a branch's strokes
+			// — so the dominant bough drops 5 to 4 and the rest 4 to 3.
+			branch(20261020, -22, h * 0.005, 0.44, reach * 0.95, 9, 4, ink, petal);
+			branch(5512077, w + 22, -h * 0.01, Math.PI - 0.3, reach * 0.86, 7.5, 3, ink, petal);
+			branch(884413, -18, h * 0.55, -0.16, reach * 0.62, 4.2, 3, ink, petal);
+			branch(310255, w + 18, h * 0.47, Math.PI + 0.22, reach * 0.54, 3.6, 3, ink, petal);
+			// The left margin was the emptiest part of the frame once the gate
+			// moved in there, so it gets the heavier pair.
+			branch(991207, -20, h * 0.38, -0.08, reach * 0.66, 4.4, 3, ink, petal);
+			branch(448120, -20, h * 0.82, -0.2, reach * 0.56, 3.8, 3, ink, petal);
+
+			// The wider grove only where there is margin for it. On a tablet the
+			// reading column runs nearly edge to edge, and blossom belongs behind
+			// the text, not across it.
+			if (w >= 1300) {
+				// Boughs from the edges, never a trunk standing in the page: the
+				// trees live outside the frame and reach in.
+				branch(520118, w + 20, h * 0.6, Math.PI + 0.04, reach * 0.42, 2.8, 3, ink, petal);
+				branch(840217, -22, h * 0.7, -0.06, reach * 0.44, 3, 3, ink, petal);
+			}
+
+			scene.globalAlpha = 1;
+		};
+
+		let canopyDay: HTMLCanvasElement | null = null;
+		let canopyNight: HTMLCanvasElement | null = null;
+		let canopyRatio = 1;
+
+		const bakeCanopy = () => {
+			const make = (atMix: number) => {
+				const plate = document.createElement('canvas');
+				plate.width = sceneCanvas.width;
+				plate.height = sceneCanvas.height;
+				const ctx = plate.getContext('2d');
+				if (!ctx) return null;
+				ctx.setTransform(canopyRatio, 0, 0, canopyRatio, PAD * canopyRatio, PAD * canopyRatio);
+				const liveCtx = scene;
+				const liveMix = mix;
+				scene = ctx;
+				mix = atMix;
+				paintCanopy();
+				scene = liveCtx;
+				mix = liveMix;
+				return plate;
+			};
+			canopyDay = make(0);
+			canopyNight = make(1);
+		};
+
+		/** Two blits instead of a few thousand fills. */
+		const blitCanopy = () => {
+			if (!canopyDay || !canopyNight) {
+				paintCanopy();
+				return;
+			}
+			scene.save();
+			scene.setTransform(1, 0, 0, 1, 0, 0);
+			scene.globalAlpha = 1 - mix;
+			scene.drawImage(canopyDay, 0, 0);
+			scene.globalAlpha = mix;
+			scene.drawImage(canopyNight, 0, 0);
 			scene.restore();
 		};
 
@@ -573,6 +674,7 @@
 				scene.fillRect(0, line, w, 1);
 			}
 
+			const toriiT0 = perf ? performance.now() : 0;
 			// A torii standing in the shallows, the way Itsukushima's does. Red
 			// is the only hue this site uses, and a gate is flat geometry — two
 			// posts and two beams — so it survives being drawn by hand at a size
@@ -647,34 +749,11 @@
 			}
 			scene.stroke();
 
-			// Sakura. One dominant bough from the top left, a lighter counterweight
-			// from the top right, and two short limbs lower down. Six equal
-			// systems made a wreath; the asymmetry is what composes the frame.
-			const reach = Math.min(w * 0.13, h * 0.2);
-			branch(20261020, -22, h * 0.005, 0.44, reach * 0.95, 9, 5, ink, petal);
-			branch(5512077, w + 22, -h * 0.01, Math.PI - 0.3, reach * 0.86, 7.5, 4, ink, petal);
-			branch(884413, -18, h * 0.55, -0.16, reach * 0.62, 4.2, 4, ink, petal);
-			branch(310255, w + 18, h * 0.47, Math.PI + 0.22, reach * 0.54, 3.6, 4, ink, petal);
-			// The left margin was the emptiest part of the frame once the gate
-			// moved in there, so it gets the heavier pair.
-			branch(991207, -20, h * 0.38, -0.08, reach * 0.66, 4.4, 4, ink, petal);
-			branch(448120, -20, h * 0.82, -0.2, reach * 0.56, 3.8, 4, ink, petal);
-			branch(773041, w + 20, h * 0.86, Math.PI + 0.14, reach * 0.5, 3.4, 4, ink, petal);
+			if (perf) timing.toriiMs += performance.now() - toriiT0;
 
-			// The wider grove only where there is margin for it. On a tablet the
-			// reading column runs nearly edge to edge, and blossom belongs behind
-			// the text, not across it.
-			if (w >= 1300) {
-				branch(736401, -20, h * 0.34, 0.04, reach * 0.46, 3.2, 3, ink, petal);
-				branch(520118, w + 20, h * 0.6, Math.PI + 0.04, reach * 0.42, 2.8, 3, ink, petal);
-				branch(90210, w + 20, h * 0.77, Math.PI - 0.1, reach * 0.4, 3, 3, ink, petal);
-				// More boughs from the edges, never a trunk standing in the page:
-				// the trees live outside the frame and reach in.
-				branch(840217, -22, h * 0.7, -0.06, reach * 0.44, 3, 3, ink, petal);
-				branch(781103, w + 22, h * 0.85, Math.PI + 0.05, reach * 0.36, 2.6, 3, ink, petal);
-			}
-
-			scene.globalAlpha = 1;
+			const canopyT0 = perf ? performance.now() : 0;
+			blitCanopy();
+			if (perf) timing.canopyMs += performance.now() - canopyT0;
 		};
 
 		const spawn = (fresh: boolean): Petal => ({
@@ -801,32 +880,7 @@
 			// face, packed tight near the far shore and spreading apart towards
 			// the viewer. Laying them out once and only animating their glint is
 			// what keeps it cheap.
-			// Aurora curtains. Four of them, each on its own slow period, so the
-			// band never returns to a shape it held — same rule as everything
-			// else that moves here.
-			aurora = Array.from({ length: 3 }, (_, i) => ({
-				// Higher and shallower than the first attempt: a curtain that
-				// hangs a quarter of the way down the frame is standing next to
-				// you, and aurora is 100km away.
-				base: h * (0.035 + i * 0.032 + rand() * 0.02),
-				amp: h * (0.012 + rand() * 0.02),
-				span: h * (0.045 + rand() * 0.07),
-				speed: 0.00005 + rand() * 0.00009,
-				phase: rand() * Math.PI * 2,
-				// Green low, violet high: that is the order real aurora comes in,
-				// oxygen below and nitrogen above.
-				cold: i < 2 ? 1 : 0,
-				weight: 0.55 + rand() * 0.45,
-			}));
-
-			swell = Array.from({ length: 4 }, (_, i) => ({
-				at: i / 4,
-				speed: 0.000022 + rand() * 0.000016,
-				phase: rand() * Math.PI * 2,
-				weight: 0.6 + rand() * 0.5,
-			}));
-
-			moonlight = Array.from({ length: 56 }, () => ({
+			moonlight = Array.from({ length: 34 }, () => ({
 				// Biased towards the horizon, where the wave faces crowd.
 				depth: Math.pow(rand(), 0.72),
 				lateral: (rand() * 2 - 1) * (0.45 + rand() * 0.55),
@@ -847,122 +901,6 @@
 				sky.arc(s.x, s.y, s.r, 0, Math.PI * 2);
 				sky.fill();
 			}
-		};
-
-		/**
-		 * Aurora, night only. Each curtain is one filled band between two
-		 * wandering edges, lit by a vertical gradient that fades out top and
-		 * bottom so it has no outline — an aurora with a visible edge is a
-		 * ribbon, not a light. The vertical striations are the giveaway detail:
-		 * the curtain is charged particles following field lines, so it hangs in
-		 * strands rather than washing evenly.
-		 */
-		const drawAurora = (t: number) => {
-			if (mix < 0.02) return;
-			// 16px segments. The first version stepped by w/28 — about 51px — so
-			// every curve came out as a chain of long straight runs, which is
-			// what made it read as torn polygons rather than light.
-			//
-			// Dropping to 12 looked like it cost 8600 "canvas ops" a frame, but
-			// that count weighted a lineTo the same as a fill. Nearly all of the
-			// increase was lineTo, which only appends a point; fill and stroke,
-			// which actually rasterise, stayed around 530 a frame either way.
-			const step = 16;
-			for (const c of aurora) {
-				const tint = c.cold ? '126 214 176' : '168 142 220';
-				const edge = (x: number) =>
-					c.base +
-					Math.sin(x * 0.0041 + t * c.speed * 11 + c.phase) * c.amp +
-					Math.sin(x * 0.0017 - t * c.speed * 7 + c.phase * 1.7) * c.amp * 0.62;
-				const foot = (x: number) =>
-					edge(x) + c.span * (0.58 + 0.42 * Math.sin(x * 0.0029 + c.phase * 2.1));
-
-				const wash = sky.createLinearGradient(0, c.base - c.amp, 0, c.base + c.span);
-				const peak = (mix * 0.062 * c.weight).toFixed(4);
-				wash.addColorStop(0, `rgb(${tint} / 0)`);
-				wash.addColorStop(0.3, `rgb(${tint} / ${peak})`);
-				wash.addColorStop(1, `rgb(${tint} / 0)`);
-				sky.globalAlpha = 1;
-				sky.fillStyle = wash;
-				sky.beginPath();
-				for (let x = -40; x <= w + 40; x += step) {
-					if (x === -40) sky.moveTo(x, edge(x));
-					else sky.lineTo(x, edge(x));
-				}
-				for (let x = w + 40; x >= -40; x -= step) sky.lineTo(x, foot(x));
-				sky.closePath();
-				sky.fill();
-
-				// Strands along the field lines.
-				sky.strokeStyle = `rgb(${tint})`;
-				sky.lineWidth = 1;
-				sky.beginPath();
-				for (let x = -20; x <= w + 20; x += step * 1.3) {
-					const top = edge(x);
-					sky.moveTo(x, top);
-					sky.lineTo(x, top + (foot(x) - top) * (0.45 + 0.4 * Math.sin(x * 0.02 + c.phase)));
-				}
-				sky.globalAlpha = mix * 0.03 * c.weight;
-				sky.stroke();
-			}
-			sky.globalAlpha = 1;
-		};
-
-		/**
-		 * Swell on the lake, built like the aurora: soft bands with no edge,
-		 * travelling in perspective toward the viewer.
-		 *
-		 * There were drawn waves here before and they were cut, because they
-		 * were stroked sine curves — hard lines that popped in and out as they
-		 * wrapped. A filled band under a vertical gradient has no outline to
-		 * pop, and fading it at both ends of its run removes the wrap entirely.
-		 */
-		const drawSwell = (t: number) => {
-			const line = waterY();
-			const deep = h - line;
-			if (deep <= 6) return;
-			const slipX = waterSlipX();
-			const slipY = waterSlipY();
-			const step = 20;
-			// By day the crests are darker than the water, by night lighter than
-			// it: a wave face catches the sky, and the sky is the bright thing
-			// at noon and the dark thing at midnight.
-			const crest = blend('#6f8fa6', '#e7ecf6', mix).replace('rgb(', '').replace(')', '');
-			sky.save();
-			sky.beginPath();
-			sky.rect(-PAD, line + slipY, w + PAD * 2, h - line + PAD * 2);
-			sky.clip();
-			for (const sw of swell) {
-				const travel = (((sw.at + t * sw.speed) % 1) + 1) % 1;
-				// Squared, so bands crowd at the far shore and open up near.
-				const down = travel * travel;
-				const y0 = line + down * deep + slipY;
-				const thick = deep * (0.018 + down * 0.055) * sw.weight;
-				const fade = Math.min(1, travel * 6, (1 - travel) * 3);
-				if (fade <= 0.01) continue;
-				const ride = (x: number) =>
-					Math.sin(x * 0.0058 + t * 0.0009 + sw.phase) * thick * 0.55 +
-					Math.sin(x * 0.0022 - t * 0.0006 + sw.phase * 1.6) * thick * 0.4;
-				const wash = sky.createLinearGradient(0, y0 - thick, 0, y0 + thick * 2);
-				const a = (lerp(0.12, 0.1, mix) * sw.weight * fade).toFixed(4);
-				wash.addColorStop(0, `rgb(${crest} / 0)`);
-				wash.addColorStop(0.45, `rgb(${crest} / ${a})`);
-				wash.addColorStop(1, `rgb(${crest} / 0)`);
-				sky.globalAlpha = 1;
-				sky.fillStyle = wash;
-				sky.beginPath();
-				for (let x = -30; x <= w + 30; x += step) {
-					const y = y0 + ride(x);
-					if (x === -30) sky.moveTo(x + slipX, y);
-					else sky.lineTo(x + slipX, y);
-				}
-				for (let x = w + 30; x >= -30; x -= step) {
-					sky.lineTo(x + slipX, y0 + thick * 1.15 + ride(x));
-				}
-				sky.closePath();
-				sky.fill();
-			}
-			sky.restore();
 		};
 
 		/** A meteor every half minute or so, night only, left to right. */
@@ -1195,53 +1133,12 @@
 			sky.restore();
 		};
 
-		/** Paint the still scene at one fixed `mix` into an offscreen canvas. */
-		const bakePlate = (atMix: number): HTMLCanvasElement | null => {
-			const plate = document.createElement('canvas');
-			plate.width = sceneCanvas.width;
-			plate.height = sceneCanvas.height;
-			const ctx = plate.getContext('2d');
-			if (!ctx) return null;
-			ctx.setTransform(plateRatio, 0, 0, plateRatio, PAD * plateRatio, PAD * plateRatio);
-			const liveCtx = scene;
-			const liveMix = mix;
-			scene = ctx;
-			mix = atMix;
-			drawScene();
-			scene = liveCtx;
-			mix = liveMix;
-			return plate;
-		};
-
-		const bakePlates = () => {
-			dayPlate = bakePlate(0);
-			nightPlate = bakePlate(1);
-		};
-
-		/** Composite the two plates for the current `mix`: two blits, no paths. */
-		const blitScene = () => {
-			if (!dayPlate || !nightPlate) {
-				drawScene();
-				return;
-			}
-			scene.save();
-			scene.setTransform(1, 0, 0, 1, 0, 0);
-			scene.clearRect(0, 0, sceneCanvas.width, sceneCanvas.height);
-			scene.globalAlpha = 1 - mix;
-			scene.drawImage(dayPlate, 0, 0);
-			scene.globalAlpha = mix;
-			scene.drawImage(nightPlate, 0, 0);
-			scene.restore();
-		};
-
 		const resize = () => {
-			// Cost here is fill rate, not draw calls: the aurora and the swell
-			// each cover the full width of the frame and are re-blended every
-			// frame, so every extra device pixel is paid for ~1.4M times a
-			// second. 1.25 keeps the curves smooth and drops the pixel count by
-			// a third against 1.5.
+			// Cost here is fill rate, not draw calls, so every device pixel is
+			// paid for on every frame. 1.25 stays smooth and costs a third less
+			// than 1.5.
 			const ratio = Math.min(window.devicePixelRatio || 1, 1.25);
-			plateRatio = ratio;
+			canopyRatio = ratio;
 			w = window.innerWidth;
 			h = window.innerHeight;
 			for (const c of [sceneCanvas, petalCanvas]) {
@@ -1256,8 +1153,8 @@
 				spawn(false),
 			);
 			populate();
-			bakePlates();
-			blitScene();
+			bakeCanopy();
+			drawScene();
 		};
 
 		const drawPetals = (t: number) => {
@@ -1277,14 +1174,12 @@
 			const wind = windAt(t);
 
 			drawStars(t);
-			drawAurora(t);
 			drawMeteor();
 			drawClouds(t, wind, ink);
 			drawBirds(t, wind, ink);
 
 			// Both live on the animated canvas so the water can shimmer without
 			// repainting the whole scene.
-			drawSwell(t);
 			drawRipples(ink);
 
 			// The posts keep pushing rings out into the lake. The first version
@@ -1408,11 +1303,23 @@
 
 		const loop = (t: number) => {
 			frame = requestAnimationFrame(loop);
-			// 24fps normally; 8fps while the theme is crossfading, because the
-			// still canvas is competing for the same frame.
-			if (t - last < (morphing ? 125 : 41)) return;
+			// Flat 24fps, including through the crossfade. This used to drop to
+			// 8fps during a theme change, to leave the frame to the still
+			// canvas. The still canvas now costs 6ms instead of 14, so it no
+			// longer needs the room — and the glint track is the most obviously
+			// moving thing on the water, so throttling it was itself what made
+			// the transition look like it stuttered.
+			if (t - last < 41) return;
 			last = t;
-			drawPetals(t);
+			if (perf) {
+				const t0 = performance.now();
+				drawPetals(t);
+				timing.skyMs += performance.now() - t0;
+				timing.skyFrames++;
+				if (timing.skyFrames % 24 === 0) report();
+			} else {
+				drawPetals(t);
+			}
 		};
 
 		const run = () => {
@@ -1441,14 +1348,30 @@
 		const travel = () => {
 			const from = mix;
 			const started = performance.now();
+			let painted = 0;
 			cancelAnimationFrame(morph);
-			morphing = true;
 			const step = (now: number) => {
 				const p = Math.min(1, (now - started) / 900);
 				mix = from + (target - from) * (1 - Math.pow(1 - p, 3));
-				blitScene();
+				// Repaint on a 60ms budget instead of every frame. The sun still
+				// sets while the moon rises — that motion is why this is a
+				// repaint and not a crossfade of two fixed images — but at ~15
+				// repaints across the 900ms rather than ~55.
+				if (p >= 1 || now - painted >= 60) {
+					painted = now;
+					if (perf) {
+						const t0 = performance.now();
+						drawScene();
+						const took = performance.now() - t0;
+						timing.sceneMs += took;
+						timing.scenePaints++;
+						if (took > timing.worst) timing.worst = took;
+					} else {
+						drawScene();
+					}
+				}
 				if (p < 1) morph = requestAnimationFrame(step);
-				else morphing = false;
+				else report();
 			};
 			morph = requestAnimationFrame(step);
 		};
@@ -1457,7 +1380,7 @@
 			target = (event as CustomEvent<string>).detail === 'dark' ? 1 : 0;
 			if (still) {
 				mix = target;
-				blitScene();
+				drawScene();
 				drawPetals(0);
 			} else {
 				travel();
