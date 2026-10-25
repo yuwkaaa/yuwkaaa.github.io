@@ -141,6 +141,9 @@
 		// was the jolt: wind feeds the chop, the chop sets the width of the
 		// moon's track, so every gust snapped the whole track to a new shape in
 		// a single frame.
+		// True while the theme crossfade runs, so the animated canvas can back
+		// off and leave the frame budget to the expensive still repaint.
+		let morphing = false;
 		let gustAim = 0;
 		let gust = 0;
 		// Where the pointer is, in viewport coordinates, and -999 when it has
@@ -598,7 +601,7 @@
 				// Drawn in bands that butt against each other, each one fainter
 				// than the last, so the image dissolves with depth. Cutting it
 				// into separated stripes instead read as a barcode.
-				const bands = 14;
+				const bands = 6;
 				const deep = h + PAD - footY;
 				for (let b = 0; b < bands; b++) {
 					const y0 = footY + (deep * b) / bands;
@@ -1357,7 +1360,9 @@
 
 		const loop = (t: number) => {
 			frame = requestAnimationFrame(loop);
-			if (t - last < 41) return; // 24fps; nothing here moves fast enough to show it
+			// 24fps normally; 8fps while the theme is crossfading, because the
+			// still canvas is competing for the same frame.
+			if (t - last < (morphing ? 125 : 41)) return;
 			last = t;
 			drawPetals(t);
 		};
@@ -1374,16 +1379,32 @@
 			frame = 0;
 		};
 
-		// Sunset into moonrise: 900ms, ease-out, the scene repainting only here.
+		/**
+		 * Sunset into moonrise: 900ms, ease-out.
+		 *
+		 * The still canvas is the expensive one — the whole sakura canopy is
+		 * brush strokes, each a filled path — and this is the only place it gets
+		 * repainted. Repainting it on every animation frame put ~55 full redraws
+		 * into 900ms, which Chromium could not keep up with. It is a colour
+		 * crossfade, so 60ms between repaints (about 15 of them) looks the same
+		 * and costs a quarter as much. The final frame always draws, so the
+		 * scene never settles on an intermediate `mix`.
+		 */
 		const travel = () => {
 			const from = mix;
 			const started = performance.now();
+			let painted = 0;
 			cancelAnimationFrame(morph);
+			morphing = true;
 			const step = (now: number) => {
 				const p = Math.min(1, (now - started) / 900);
 				mix = from + (target - from) * (1 - Math.pow(1 - p, 3));
-				drawScene();
+				if (p >= 1 || now - painted >= 60) {
+					painted = now;
+					drawScene();
+				}
 				if (p < 1) morph = requestAnimationFrame(step);
+				else morphing = false;
 			};
 			morph = requestAnimationFrame(step);
 		};
