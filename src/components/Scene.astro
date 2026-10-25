@@ -57,7 +57,7 @@
 
 	const sceneCanvas = document.getElementById('scene') as HTMLCanvasElement | null;
 	const petalCanvas = document.getElementById('sakura') as HTMLCanvasElement | null;
-	const scene = sceneCanvas?.getContext('2d');
+	let scene = sceneCanvas?.getContext('2d');
 	const sky = petalCanvas?.getContext('2d');
 
 	if (sceneCanvas && petalCanvas && scene && sky) {
@@ -115,6 +115,13 @@
 
 		// Matches the 28px overhang in global.css: the parallax headroom.
 		const PAD = 28;
+		// The still scene, pre-rendered once at full day and once at full night.
+		// The crossfade then costs two drawImage calls instead of repainting a
+		// canopy of brush strokes every frame — which Firefox absorbed and
+		// Chromium did not.
+		let dayPlate: HTMLCanvasElement | null = null;
+		let nightPlate: HTMLCanvasElement | null = null;
+		let plateRatio = 1;
 		let w = 0;
 		let h = 0;
 		let mix = isNight() ? 1 : 0;
@@ -1188,6 +1195,45 @@
 			sky.restore();
 		};
 
+		/** Paint the still scene at one fixed `mix` into an offscreen canvas. */
+		const bakePlate = (atMix: number): HTMLCanvasElement | null => {
+			const plate = document.createElement('canvas');
+			plate.width = sceneCanvas.width;
+			plate.height = sceneCanvas.height;
+			const ctx = plate.getContext('2d');
+			if (!ctx) return null;
+			ctx.setTransform(plateRatio, 0, 0, plateRatio, PAD * plateRatio, PAD * plateRatio);
+			const liveCtx = scene;
+			const liveMix = mix;
+			scene = ctx;
+			mix = atMix;
+			drawScene();
+			scene = liveCtx;
+			mix = liveMix;
+			return plate;
+		};
+
+		const bakePlates = () => {
+			dayPlate = bakePlate(0);
+			nightPlate = bakePlate(1);
+		};
+
+		/** Composite the two plates for the current `mix`: two blits, no paths. */
+		const blitScene = () => {
+			if (!dayPlate || !nightPlate) {
+				drawScene();
+				return;
+			}
+			scene.save();
+			scene.setTransform(1, 0, 0, 1, 0, 0);
+			scene.clearRect(0, 0, sceneCanvas.width, sceneCanvas.height);
+			scene.globalAlpha = 1 - mix;
+			scene.drawImage(dayPlate, 0, 0);
+			scene.globalAlpha = mix;
+			scene.drawImage(nightPlate, 0, 0);
+			scene.restore();
+		};
+
 		const resize = () => {
 			// Cost here is fill rate, not draw calls: the aurora and the swell
 			// each cover the full width of the frame and are re-blended every
@@ -1195,6 +1241,7 @@
 			// second. 1.25 keeps the curves smooth and drops the pixel count by
 			// a third against 1.5.
 			const ratio = Math.min(window.devicePixelRatio || 1, 1.25);
+			plateRatio = ratio;
 			w = window.innerWidth;
 			h = window.innerHeight;
 			for (const c of [sceneCanvas, petalCanvas]) {
@@ -1209,7 +1256,8 @@
 				spawn(false),
 			);
 			populate();
-			drawScene();
+			bakePlates();
+			blitScene();
 		};
 
 		const drawPetals = (t: number) => {
@@ -1393,16 +1441,12 @@
 		const travel = () => {
 			const from = mix;
 			const started = performance.now();
-			let painted = 0;
 			cancelAnimationFrame(morph);
 			morphing = true;
 			const step = (now: number) => {
 				const p = Math.min(1, (now - started) / 900);
 				mix = from + (target - from) * (1 - Math.pow(1 - p, 3));
-				if (p >= 1 || now - painted >= 60) {
-					painted = now;
-					drawScene();
-				}
+				blitScene();
 				if (p < 1) morph = requestAnimationFrame(step);
 				else morphing = false;
 			};
@@ -1413,7 +1457,7 @@
 			target = (event as CustomEvent<string>).detail === 'dark' ? 1 : 0;
 			if (still) {
 				mix = target;
-				drawScene();
+				blitScene();
 				drawPetals(0);
 			} else {
 				travel();
