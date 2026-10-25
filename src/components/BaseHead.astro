@@ -16,7 +16,12 @@ const canonicalURL = new URL(Astro.url.pathname, Astro.site);
 <meta charset="utf-8" />
 <script is:inline>
 	try {
-		if (localStorage.getItem('theme') === 'dark') {
+		// ?theme=dark opens the page at night without touching the stored
+		// choice, which is what a shared link wants.
+		var asked = new URLSearchParams(location.search).get('theme');
+		if (asked === 'dark' || asked === 'light') {
+			document.documentElement.dataset.theme = asked;
+		} else if (localStorage.getItem('theme') === 'dark') {
 			document.documentElement.dataset.theme = 'dark';
 		}
 	} catch (e) {}

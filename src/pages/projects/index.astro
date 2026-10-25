@@ -15,8 +15,8 @@ const { projects } = splitRepos(await getRepos());
 			<p class="label">built</p>
 			<h2>Projects</h2>
 			<p style="max-width:58ch;color:var(--muted);margin:-0.8rem 0 1.6rem">
-				This list is read from the GitHub API when the site is built, so it never
-				drifts from the repositories themselves.
+				Security tooling, read from the GitHub API when the site is built, so the
+				descriptions and languages never drift from the repositories themselves.
 			</p>
 			{projects.length === 0 ? (
 				<p style="color:var(--muted)">Nothing here yet.</p>

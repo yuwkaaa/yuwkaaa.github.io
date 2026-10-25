@@ -23,15 +23,36 @@ const { title, description } = Astro.props;
 		<main><slot /></main>
 		<Footer />
 		<script>
-			// Click leaves a slash where the pointer landed.
+			// A click throws a few petals out of the point of impact. There were
+			// expanding rings here too; fixed-position and scaled up to 6x they
+			// swallowed whatever was under the pointer, so they are gone.
 			if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
 				document.addEventListener('pointerdown', (event) => {
-					const mark = document.createElement('span');
-					mark.className = 'slash';
-					mark.style.left = `${event.clientX}px`;
-					mark.style.top = `${event.clientY}px`;
-					document.body.appendChild(mark);
-					mark.addEventListener('animationend', () => mark.remove());
+					const place = (el: HTMLElement) => {
+						el.style.left = `${event.clientX}px`;
+						el.style.top = `${event.clientY}px`;
+						document.body.appendChild(el);
+						el.addEventListener('animationend', () => el.remove());
+						// animationend does not fire if the animation never starts
+						// (a hidden tab, a style that failed to load), and a stuck
+						// absolutely-positioned element is a visible bug.
+						setTimeout(() => el.remove(), 1600);
+					};
+
+					const count = 5 + Math.floor(Math.random() * 3);
+					for (let i = 0; i < count; i++) {
+						const fleck = document.createElement('span');
+						fleck.className = 'fleck';
+						// Thrown mostly upward and outward, then falling.
+						const angle = -Math.PI / 2 + (Math.random() - 0.5) * 2.4;
+						const reach = 26 + Math.random() * 54;
+						fleck.style.setProperty('--dx', `${Math.cos(angle) * reach}px`);
+						fleck.style.setProperty('--dy', `${Math.sin(angle) * reach}px`);
+						fleck.style.setProperty('--fall', `${34 + Math.random() * 40}px`);
+						fleck.style.setProperty('--spin', `${(Math.random() - 0.5) * 420}deg`);
+						fleck.style.animationDelay = `${Math.random() * 70}ms`;
+						place(fleck);
+					}
 				});
 			}
 		</script>

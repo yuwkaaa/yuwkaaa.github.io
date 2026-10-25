@@ -4,11 +4,32 @@
     "CVE-2026-113468",
     "CVE-2026-107268",
     "Vortex",
-    "SSReFuse"
+    "SSReFuse",
+    "Hybrid-Vulnerability-Analyzer",
+    "Enc2Health"
   ],
-  "hide": [],
+  "show": [
+    "Vortex",
+    "SSReFuse",
+    "Hybrid-Vulnerability-Analyzer",
+    "Enc2Health"
+  ],
+  "showTopics": [
+    "security",
+    "appsec",
+    "web-security",
+    "vulnerability-research",
+    "ctf"
+  ],
+  "hide": [
+    "yuwkaaa.github.io",
+    "RVCA"
+  ],
   "describe": {
-    "Vortex": "Research prototype, accepted at NSS 2026."
+    "Vortex": "Research prototype, accepted at NSS 2026.",
+    "SSReFuse": "Static analysis plus an agentic pass for SSRF detection.",
+    "Hybrid-Vulnerability-Analyzer": "Static analysis and a local LLM in one vulnerability pipeline.",
+    "Enc2Health": "Encrypted query processing for cloud-native health data."
   },
   "fallback": [
     {

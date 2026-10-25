@@ -53,9 +53,28 @@ async function fetchRepos(): Promise<Repo[]> {
 	const hide = new Set(featured.hide);
 	const describe = featured.describe as Record<string, string>;
 
-	return repos
-		.filter((r) => !r.fork && !r.archived && !hide.has(r.name))
-		.map((r) => ({ ...r, description: describe[r.name] ?? r.description }));
+	const live = repos.filter((r) => !r.fork && !r.archived && !hide.has(r.name));
+	const kept = live.filter(isSecurityWork);
+	console.log(
+		`[github] ${kept.length} of ${repos.length} repos listed ` +
+			`(${repos.length - live.length} fork/archived/hidden, ` +
+			`${live.length - kept.length} off-topic)`,
+	);
+
+	return kept.map((r) => ({ ...r, description: describe[r.name] ?? r.description }));
+}
+
+/**
+ * The site is a security portfolio, so the repo list is default-deny: a repo
+ * shows only if data/featured.json names it, or it carries one of the topics
+ * listed there, or it is a CVE repo. Anything else — coursework, this site —
+ * stays off without having to be hidden by name.
+ */
+function isSecurityWork(repo: Repo): boolean {
+	if (CVE_REPO.test(repo.name)) return true;
+	if ((featured.show as string[]).includes(repo.name)) return true;
+	const topics = new Set(featured.showTopics as string[]);
+	return (repo.topics ?? []).some((t) => topics.has(t));
 }
 
 /** Repos named CVE-YYYY-NNNNN are research; everything else is a project. */

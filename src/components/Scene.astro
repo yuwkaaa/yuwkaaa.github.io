@@ -3,21 +3,44 @@
 //
 //   day   — a red sun over Fuji, sakura reaching in from the edges
 //   night — a white moon over water, its reflection broken by ripples
+
 //
 // One value drives everything: `mix`, 0 at day and 1 at night. Toggling the
 // theme animates it, so the sun sets as the moon rises and the lake fades in
 // under it rather than the two scenes cutting.
 //
-// Two canvases on purpose. The scene is repainted only while that transition
-// runs, or on resize, so at rest it costs nothing — which is what lets the
-// canopy be a few thousand strokes. Only the petals repaint, and both canvases
-// are fixed to the viewport, so their size never grows with the page.
+// Two canvases on purpose. The still scene — Fuji, the orb, the ridges, the
+// sakura canopy — is repainted only while that transition runs, or on resize,
+// so at rest it costs nothing, which is what lets the canopy be a few thousand
+// strokes. The second canvas repaints at 30fps and carries only five things:
+// drifting petals, cloud banks, a flock by day, stars and the moon's
+// reflection by night, and a ring where a petal lands on the water.
+//
+// It carried nine at one point — pampas grass, fireflies, drawn swell on the
+// lake, a pulsing sun — and the scene read as a loop running rather than
+// weather happening. Scattered effects on short cycles are what give that
+// away, so the rule here is few layers, long periods, nothing on a beat the
+// eye can count.
+//
+// One wind value drives the petals and the clouds together: a handful of
+// things moving on their own timers read as noise, the same things leaning
+// into one gust read as weather. Both canvases are fixed to the viewport, so
+// their size never grows with the page.
 ---
 
 <canvas id="scene" aria-hidden="true"></canvas>
 <canvas id="sakura" aria-hidden="true"></canvas>
 
 <script>
+	type Star = { x: number; y: number; r: number; base: number; speed: number; phase: number };
+	type Streak = { off: number; len: number; rise: number; breathe: number; weight: number };
+	type Cloud = { x: number; y: number; w: number; drift: number; tone: number; streaks: Streak[] };
+	type Bird = { lag: number; lift: number; flap: number };
+	type Ripple = { x: number; y: number; r: number; life: number; push: number };
+	type Facet = { depth: number; lateral: number; phase: number; speed: number; len: number; weight: number };
+	type Curtain = { base: number; amp: number; span: number; speed: number; phase: number; cold: number; weight: number };
+	type Swell = { at: number; speed: number; phase: number; weight: number };
+
 	type Petal = {
 		x: number;
 		y: number;
@@ -27,6 +50,9 @@
 		spin: number;
 		flip: number;
 		tone: number;
+		landed: number;
+		afloat: number;
+		float: number;
 	};
 
 	const sceneCanvas = document.getElementById('scene') as HTMLCanvasElement | null;
@@ -35,8 +61,32 @@
 	const sky = petalCanvas?.getContext('2d');
 
 	if (sceneCanvas && petalCanvas && scene && sky) {
-		const DAY = { ink: '#101113', orb: '#e10600', petal: '#f0b3ad', accent: '#e10600' };
-		const NIGHT = { ink: '#e8ecf5', orb: '#f7f4ec', petal: '#dcbcc6', accent: '#ff5a6e' };
+		// Blossom takes three tones, not one: a body colour, a lit face and a
+		// deeper edge. One flat pink is what made the old canopy read as noise.
+		const DAY = {
+			ink: '#101113',
+			orb: '#e10600',
+			petal: '#eeaca4',
+			petalLit: '#f9d9d3',
+			petalDeep: '#d17f78',
+			accent: '#e10600',
+			// Day water: a pale blue-grey that still reads as water against
+			// white paper, lighter at the far shore like the night lake.
+			water: '#aec4d2',
+			waterShore: '#d8e4ea',
+		};
+		const NIGHT = {
+			ink: '#e8ecf5',
+			orb: '#f7f4ec',
+			petal: '#d3a6b5',
+			petalLit: '#e9ced7',
+			petalDeep: '#b07d8d',
+			accent: '#ff5a6e',
+			// The lake is darker than the sky above it — true of real water at
+			// night, and what makes the moon's track on it read at all.
+			water: '#02050a',
+			waterShore: '#0a111d',
+		};
 
 		const rgb = (hex: string): [number, number, number] => [
 			parseInt(hex.slice(1, 3), 16),
@@ -63,22 +113,182 @@
 		const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 		const isNight = () => document.documentElement.dataset.theme === 'dark';
 
+		// Matches the 28px overhang in global.css: the parallax headroom.
+		const PAD = 28;
 		let w = 0;
 		let h = 0;
 		let mix = isNight() ? 1 : 0;
 		let target = mix;
 		let petals: Petal[] = [];
+		let stars: Star[] = [];
+		let clouds: Cloud[] = [];
+		let ripples: Ripple[] = [];
+		let moonlight: Facet[] = [];
+		let aurora: Curtain[] = [];
+		let swell: Swell[] = [];
 		let frame = 0;
 		let morph = 0;
 		let last = 0;
 
-		const waterY = () => h * lerp(0.86, 0.72, mix);
-		const horizon = () => h * lerp(0.8, 0.665, mix);
+		// A flock and a meteor are one-at-a-time events rather than populations,
+		// so they are single records that switch on and travel.
+		const flock = { on: false, x: 0, y: 0, dir: 1, speed: 0, birds: [] as Bird[] };
+		const meteor = { on: false, x: 0, y: 0, vx: 0, vy: 0, life: 0 };
+
+		// Wind: two slow sines for the prevailing drift, plus `gust`, which is
+		// kicked at random and decays. The irregularity is the point.
+		// `gustAim` takes the step; `gust` chases it. Applying a gust directly
+		// was the jolt: wind feeds the chop, the chop sets the width of the
+		// moon's track, so every gust snapped the whole track to a new shape in
+		// a single frame.
+		let gustAim = 0;
+		let gust = 0;
+		// Where the pointer is, in viewport coordinates, and -999 when it has
+		// left or never arrived.
+		let pointerX = -9999;
+		let pointerY = -9999;
+
+		/**
+		 * Parallax. The two canvases shift by different amounts with the pointer
+		 * and the scroll, which puts the near layer in front of the far one.
+		 *
+		 * This is the part that actually makes a background feel alive: motion
+		 * the viewer causes cannot read as a loop, because they are the clock.
+		 * The transform is a compositor job, so it costs nothing to repaint —
+		 * the canvases are 28px larger than the viewport on every side (see
+		 * global.css) so the shift never drags an empty edge into view.
+		 */
+		let tiltX = 0;
+		let tiltY = 0;
+		let scrolled = 0;
+		let parallaxQueued = false;
+		const applyParallax = () => {
+			parallaxQueued = false;
+			const fy = tiltY * 7 + scrolled * 0.025;
+			const ny = tiltY * 15 + scrolled * 0.06;
+			sceneCanvas.style.transform = `translate3d(${(tiltX * 9).toFixed(2)}px, ${fy.toFixed(2)}px, 0)`;
+			petalCanvas.style.transform = `translate3d(${(tiltX * 18).toFixed(2)}px, ${ny.toFixed(2)}px, 0)`;
+		};
+		/**
+		 * The lake is painted on the still canvas and its reflections on the
+		 * moving one, and parallax pushes those two canvases by different
+		 * amounts. Anything that belongs to the water surface has to be drawn
+		 * back by the difference, or it slides off the water when the pointer
+		 * moves — which is exactly what it did.
+		 */
+		const waterSlipX = () => tiltX * 9 - tiltX * 18;
+		const waterSlipY = () => tiltY * 7 + scrolled * 0.025 - (tiltY * 15 + scrolled * 0.06);
+
+		const queueParallax = () => {
+			if (parallaxQueued) return;
+			parallaxQueued = true;
+			requestAnimationFrame(applyParallax);
+		};
+
+		const windAt = (t: number) =>
+			Math.sin(t * 0.00017) * 0.5 + Math.sin(t * 0.00043 + 1.3) * 0.28 + gust;
+
+		// Both modes have a lake now. Day used to be dry, which is why it had no
+		// counterweight to the night scene's moon track.
+		//
+		// The waterline is derived from the horizon rather than set beside it.
+		// Given independently, the two drifted apart when the lake was raised,
+		// and the water ended up ABOVE the foot of the mountain — the mountain
+		// standing in front of the lake it is supposed to stand behind.
+		const horizon = () => h * lerp(0.74, 0.645, mix);
+		/**
+		 * Where the torii stands. The still canvas draws the gate and the moving
+		 * canvas draws the water breaking around its feet, so both need this and
+		 * neither may guess at it.
+		 */
+		const gatePos = () => {
+			// Measured off the Itsukushima gate: the pillars stand about half the
+			// gate's height apart, and the kasagi runs roughly 2.4x that pillar
+			// gap — it overhangs enormously. Mine was at 1.28x, which is why it
+			// looked stubby. Narrower pillars pay for the longer beam, so the
+			// overhang lands in the empty band between the hero buttons and the
+			// LATEST label rather than on top of either.
+			const tall = h * 0.32;
+			return {
+				tall,
+				// Three constraints pull against each other here: the right
+				// pillar has to stay clear of the text column at x=200, the
+				// kasagi overhangs 2.1 half-widths so a wide stance pushes its
+				// left end off-screen, and the gate should not hug the frame
+				// edge. 0.345 bought the stance by shoving the gate so far left
+				// that the beam lost 114px off the side. At 0.3 the stance is
+				// still open (0.52 width-to-height, near the photo's 0.50), the
+				// right pillar reaches further right than before, and the beam
+				// loses only 60px.
+				half: tall * 0.3,
+				gx: Math.max(76, Math.min(w * 0.084, (w - 1040) / 2 - 79)),
+				footY: waterY() + h * 0.05,
+			};
+		};
+		const waterY = () => horizon() + h * 0.015;
 		const orb = () => ({
-			x: w * lerp(0.87, 0.74, mix),
+			// The moon sits further out than the sun: its track falls straight
+			// down the water beneath it, and in the middle of the frame that
+			// track lands behind the reading column where nobody sees it.
+			x: w * lerp(0.87, 0.83, mix),
 			y: h * lerp(0.24, 0.2, mix),
 			r: Math.min(w, h) * lerp(0.13, 0.105, mix),
 		});
+
+		/**
+		 * How much a mark may show on the moon's face: 0 on the disc, 1 clear of
+		 * it, with a soft shoulder. Blossom and petals cross the moon along the
+		 * branch; their colour must not read as damage to the disc.
+		 */
+		const moonFade = (x: number, y: number) => {
+			if (mix < 0.05) return 1;
+			const o = orb();
+			const t = Math.hypot(x - o.x, y - o.y) / o.r;
+			const clear = Math.max(0, Math.min(1, (t - 1.05) / 0.3));
+			return lerp(1, clear, Math.min(1, mix * 1.4));
+		};
+
+		/**
+		 * A tapered ink stroke: a filled ribbon along a quadratic curve, wide at
+		 * the trunk and thin at the tip. A constant `lineWidth` is what made the
+		 * old canopy read as grey cracks; a brush runs out of ink as it travels.
+		 */
+		const brush = (
+			x0: number,
+			y0: number,
+			cx: number,
+			cy: number,
+			x1: number,
+			y1: number,
+			w0: number,
+			w1: number,
+			ink: string,
+			alpha: number,
+		) => {
+			const steps = 10;
+			const left: Array<[number, number]> = [];
+			const right: Array<[number, number]> = [];
+			for (let i = 0; i <= steps; i++) {
+				const t = i / steps;
+				const mt = 1 - t;
+				const px = mt * mt * x0 + 2 * mt * t * cx + t * t * x1;
+				const py = mt * mt * y0 + 2 * mt * t * cy + t * t * y1;
+				const dx = 2 * mt * (cx - x0) + 2 * t * (x1 - cx);
+				const dy = 2 * mt * (cy - y0) + 2 * t * (y1 - cy);
+				const len = Math.hypot(dx, dy) || 1;
+				const hw = lerp(w0, w1, t) / 2;
+				left.push([px - (dy / len) * hw, py + (dx / len) * hw]);
+				right.push([px + (dy / len) * hw, py - (dx / len) * hw]);
+			}
+			scene.globalAlpha = alpha;
+			scene.fillStyle = ink;
+			scene.beginPath();
+			scene.moveTo(left[0][0], left[0][1]);
+			for (const [x, y] of left.slice(1)) scene.lineTo(x, y);
+			for (let i = right.length - 1; i >= 0; i--) scene.lineTo(right[i][0], right[i][1]);
+			scene.closePath();
+			scene.fill();
+		};
 
 		/** One sakura limb system, reaching in from an edge. */
 		const branch = (
@@ -93,76 +303,106 @@
 			petal: string,
 		) => {
 			const rand = seeded(seed);
+			const lit = blend(DAY.petalLit, NIGHT.petalLit, mix);
+			const deep = blend(DAY.petalDeep, NIGHT.petalDeep, mix);
+			const accent = blend(DAY.accent, NIGHT.accent, mix);
 
+			/** One five-petalled blossom: five flat marks, not a ring of holes. */
 			const flower = (x: number, y: number, r: number) => {
-				scene.globalAlpha = lerp(0.17, 0.3, mix) + rand() * 0.1;
-				scene.fillStyle = petal;
-				const turn = rand() * Math.PI;
+				const turn = rand() * Math.PI * 2;
+				scene.fillStyle = rand() < 0.22 ? deep : rand() < 0.2 ? lit : petal;
+				scene.globalAlpha = (lerp(0.4, 0.3, mix) + rand() * 0.1) * moonFade(x, y);
 				for (let i = 0; i < 5; i++) {
 					const a = turn + (i / 5) * Math.PI * 2;
 					scene.beginPath();
-					scene.arc(x + Math.cos(a) * r * 0.72, y + Math.sin(a) * r * 0.72, r * 0.6, 0, Math.PI * 2);
+					scene.ellipse(
+						x + Math.cos(a) * r * 0.62,
+						y + Math.sin(a) * r * 0.62,
+						r * 0.55,
+						r * 0.31,
+						a,
+						0,
+						Math.PI * 2,
+					);
 					scene.fill();
 				}
-				scene.globalAlpha = lerp(0.3, 0.5, mix);
-				scene.fillStyle = blend(DAY.accent, NIGHT.accent, mix);
+				scene.globalAlpha = lerp(0.25, 0.3, mix);
+				scene.fillStyle = accent;
 				scene.beginPath();
-				scene.arc(x, y, r * 0.22, 0, Math.PI * 2);
+				scene.arc(x, y, r * 0.1, 0, Math.PI * 2);
 				scene.fill();
 			};
 
-			// Blossoms grow in umbels: several flowers on short stalks from one
-			// node. Scattered single flowers are what makes a drawn tree look bare.
-			const umbel = (x: number, y: number, count: number, spread: number, scale: number) => {
+			/**
+			 * A mass of blossom rather than scattered blooms. A pale wash with an
+			 * irregular edge holds the cluster together, and individual flowers
+			 * sit on top, so the eye reads a bough in flower at a glance and finds
+			 * the petals only when it looks closer.
+			 */
+			const cluster = (x: number, y: number, scale: number) => {
+				scene.fillStyle = petal;
+				scene.globalAlpha = lerp(0.035, 0.032, mix) * moonFade(x, y);
+				for (let i = 0; i < 5; i++) {
+					const a = rand() * Math.PI * 2;
+					const d = scale * (0.35 + rand() * 0.8);
+					scene.beginPath();
+					scene.arc(
+						x + Math.cos(a) * d,
+						y + Math.sin(a) * d,
+						scale * (0.8 + rand() * 0.6),
+						0,
+						Math.PI * 2,
+					);
+					scene.fill();
+				}
+				const count = 5 + Math.floor(rand() * 4);
 				for (let i = 0; i < count; i++) {
 					const a = rand() * Math.PI * 2;
-					const d = Math.sqrt(rand()) * spread;
-					const fx = x + Math.cos(a) * d;
-					const fy = y + Math.sin(a) * d;
-					scene.globalAlpha = lerp(0.07, 0.13, mix);
-					scene.strokeStyle = ink;
-					scene.lineWidth = 0.7;
-					scene.beginPath();
-					scene.moveTo(x, y);
-					scene.lineTo(fx, fy);
-					scene.stroke();
-					flower(fx, fy, scale * (0.55 + rand() * 1.05));
+					const d = Math.sqrt(rand()) * scale * 1.15;
+					flower(x + Math.cos(a) * d, y + Math.sin(a) * d, scale * (0.5 + rand() * 0.3));
 				}
 			};
-
 			const limb = (x: number, y: number, a: number, l: number, wd: number, d: number) => {
-				const bend = (rand() - 0.45) * 0.75;
-				const midX = x + Math.cos(a) * l * 0.55;
-				const midY = y + Math.sin(a) * l * 0.55;
+				const bend = (rand() - 0.5) * 0.6;
+				// The control point sits off the chord, so the bough bows instead
+				// of running from A to B in a straight line.
+				const bow = (rand() - 0.5) * 0.24 * l;
+				const midX = x + Math.cos(a) * l * 0.55 + Math.cos(a + Math.PI / 2) * bow;
+				const midY = y + Math.sin(a) * l * 0.55 + Math.sin(a + Math.PI / 2) * bow;
 				const endX = x + Math.cos(a + bend) * l;
 				const endY = y + Math.sin(a + bend) * l;
 
-				// The wood is thin and dark, and the blossom covers most of it.
-				scene.globalAlpha = lerp(0.16, 0.26, mix);
-				scene.strokeStyle = ink;
-				scene.lineWidth = wd;
-				scene.beginPath();
-				scene.moveTo(x, y);
-				scene.quadraticCurveTo(midX, midY, endX, endY);
-				scene.stroke();
+				brush(x, y, midX, midY, endX, endY, wd, wd * 0.34, ink, lerp(0.4, 0.32, mix));
 
-				if (d <= 1) {
-					umbel(endX, endY, 6 + Math.floor(rand() * 5), 13 + rand() * 13, 3.2);
+				if (d <= 0) {
+					cluster(endX, endY, 9.5 + rand() * 3.5);
 					return;
 				}
-				if (d <= 4 && rand() < 0.85) {
-					umbel(midX, midY, 3 + Math.floor(rand() * 4), 8 + rand() * 8, 3);
+				// Blossom runs along the old wood, not only at its tips. The
+				// nearest boughs carry flowers at two points along their length.
+				if (d >= 4) {
+					for (const t of [0.34, 0.72]) {
+						if (rand() < 0.75) {
+							const mt = 1 - t;
+							const qx = mt * mt * x + 2 * mt * t * midX + t * t * endX;
+							const qy = mt * mt * y + 2 * mt * t * midY + t * t * endY;
+							cluster(qx, qy, 4.5 + rand() * 2.2);
+						}
+					}
+				} else if (rand() < 0.8) {
+					cluster(midX, midY, 4.5 + rand() * 2.5);
 				}
-				const twigs = d > 4 ? 2 : 2 + Math.floor(rand() * 2);
+				const twigs = 2;
 				for (let i = 0; i < twigs; i++) {
-					const spread = (i - (twigs - 1) / 2) * (0.62 + rand() * 0.45);
-					limb(endX, endY, a + bend + spread, l * (0.68 + rand() * 0.14), wd * 0.64, d - 1);
+					const spread = (i - (twigs - 1) / 2) * (0.7 + rand() * 0.5);
+					limb(endX, endY, a + bend + spread, l * (0.64 + rand() * 0.14), wd * 0.56, d - 1);
 				}
 			};
 
 			limb(sx, sy, angle, len, width, depth);
 		};
 
+		/** Fuji: an asymmetric cone, a flat crater, a snow cap cut by fingers. */
 		/** Fuji: concave slopes, a flat crater, a snow cap that reads in both themes. */
 		const fuji = (ink: string) => {
 			const baseY = horizon();
@@ -188,7 +428,7 @@
 				scene.closePath();
 			};
 
-			scene.globalAlpha = lerp(0.065, 0.075, mix);
+			scene.globalAlpha = lerp(0.1, 0.095, mix);
 			scene.fillStyle = ink;
 			outline();
 			scene.fill();
@@ -221,20 +461,23 @@
 			const ink = blend(DAY.ink, NIGHT.ink, mix);
 			const petal = blend(DAY.petal, NIGHT.petal, mix);
 			const { x: orbX, y: orbY, r: orbR } = orb();
-			scene.clearRect(0, 0, w, h);
+			scene.clearRect(-PAD, -PAD, w + PAD * 2, h + PAD * 2);
 
-			if (mix > 0.01) {
-				const star = seeded(77003);
-				scene.fillStyle = NIGHT.ink;
-				for (let i = 0; i < 46; i++) {
-					const sx = star() * w;
-					const sy = star() * h * 0.62;
-					scene.globalAlpha = mix * (0.15 + star() * 0.4);
-					scene.beginPath();
-					scene.arc(sx, sy, 0.6 + star() * 0.9, 0, Math.PI * 2);
-					scene.fill();
-				}
+			// Day sky: white overhead, warming to the colour of the sun where it
+			// meets the far shore. The page stays white where the text sits; all
+			// of this happens below the fold of the hero. Night keeps its flat
+			// deep blue, which is what the prints do.
+			if (mix < 0.99) {
+				const air = scene.createLinearGradient(0, h * 0.12, 0, horizon());
+				air.addColorStop(0, 'rgb(255 255 255 / 0)');
+				air.addColorStop(0.6, `rgb(250 226 221 / ${((1 - mix) * 0.3).toFixed(3)})`);
+				air.addColorStop(1, `rgb(243 197 190 / ${((1 - mix) * 0.72).toFixed(3)})`);
+				scene.globalAlpha = 1;
+				scene.fillStyle = air;
+				scene.fillRect(-PAD, -PAD, w + PAD * 2, horizon() + PAD);
 			}
+
+			// Stars are on the moving canvas so they can twinkle.
 
 			// Sun: a solid red disc, hinomaru rather than an outline.
 			if (mix < 0.99) {
@@ -298,29 +541,128 @@
 				}
 				scene.lineTo(w, h);
 				scene.closePath();
-				scene.globalAlpha = lerp(0.06, 0.05, mix) + layer * 0.03;
+				scene.globalAlpha = lerp(0.075, 0.05, mix) + layer * lerp(0.055, 0.03, mix);
 				scene.fillStyle = ink;
 				scene.fill();
 			}
 
-			// The lake, night only: the ridges stand their feet in it.
-			if (mix > 0.01) {
+			// The lake: the ridges stand their feet in it. Deeper toward the
+			// viewer, lighter where it meets the far shore, so the sheet has
+			// somewhere to recede to.
+			{
 				const line = waterY();
-				scene.globalAlpha = mix * 0.075;
-				scene.fillStyle = NIGHT.ink;
+				const depth = scene.createLinearGradient(0, line, 0, h);
+				depth.addColorStop(0, blend(DAY.waterShore, NIGHT.waterShore, mix));
+				depth.addColorStop(1, blend(DAY.water, NIGHT.water, mix));
+				scene.globalAlpha = lerp(0.5, 0.72, mix);
+				scene.fillStyle = depth;
 				scene.fillRect(0, line, w, h - line);
-				scene.globalAlpha = mix * 0.2;
+				// The waterline, where the far shore catches the light.
+				scene.globalAlpha = lerp(0.14, 0.22, mix);
+				scene.fillStyle = blend(DAY.ink, NIGHT.orb, mix);
 				scene.fillRect(0, line, w, 1);
 			}
 
-			// Sakura reaching in from both sides, largest at the top left.
+			// A torii standing in the shallows, the way Itsukushima's does. Red
+			// is the only hue this site uses, and a gate is flat geometry — two
+			// posts and two beams — so it survives being drawn by hand at a size
+			// where a detailed object would not.
+			{
+				const line = waterY();
+				// Out in the left margin, clear of the 1040px reading column: a
+				// gate behind a paragraph of text is worse than no gate.
+				const { tall, half, gx, footY } = gatePos();
+				// Big, and out in the left margin. The kasagi overhangs the edge
+				// of the reading column by a little, which is fine — it is the
+				// thin tip of the beam, not the body of the gate.
+				const post = gate * 0.05;
+				// Night used to be near-black, which lost the gate entirely. A
+				// lit red still reads against the deep blue.
+				const red = blend('#c4160b', '#8e2a33', mix);
+
+				// Drawn through the shared gate(). This used to be a second,
+				// hand-copied version of the same geometry, so every correction
+				// made to gate() silently missed the gate actually on screen.
+				const shape = (alpha: number) => {
+					scene.globalAlpha = alpha;
+					scene.fillStyle = red;
+					gate(scene, gx, footY, half, tall);
+				};
+
+				shape(lerp(0.8, 0.74, mix));
+
+				// Its reflection. At this angle a reflection stretches TOWARD the
+				// viewer rather than squashing — the 0.52 is what made it stumpy.
+				// And the surface breaks it into bands: an unbroken mirror image
+				// is the other half of the same mistake.
+				// Drawn in bands that butt against each other, each one fainter
+				// than the last, so the image dissolves with depth. Cutting it
+				// into separated stripes instead read as a barcode.
+				const bands = 14;
+				const deep = h + PAD - footY;
+				for (let b = 0; b < bands; b++) {
+					const y0 = footY + (deep * b) / bands;
+					scene.save();
+					scene.beginPath();
+					scene.rect(-PAD, y0, w + PAD * 2, deep / bands + 0.7);
+					scene.clip();
+					scene.translate(0, footY);
+					scene.scale(1, -1.06);
+					scene.translate(0, -footY);
+					shape(0.34 * Math.pow(1 - b / (bands - 1), 1.5));
+					scene.restore();
+				}
+			}
+
+			// The rail she stands at, sagging a little between its posts. Still
+			// canvas: it never moves, and it gives the scene a foreground.
+			const railY = h * lerp(0.9, 0.84, mix);
+			const sag = (x: number) => railY + Math.sin((x / w) * Math.PI) * h * 0.022;
+			scene.globalAlpha = lerp(0.11, 0.13, mix);
+			scene.strokeStyle = ink;
+			scene.lineWidth = 1.7;
+			scene.beginPath();
+			for (let x = 0; x <= w; x += 18) {
+				if (x === 0) scene.moveTo(x, sag(x));
+				else scene.lineTo(x, sag(x));
+			}
+			scene.stroke();
+			scene.lineWidth = 1.2;
+			scene.globalAlpha = lerp(0.08, 0.1, mix);
+			const postGap = Math.max(84, w / 13);
+			scene.beginPath();
+			for (let x = postGap * 0.4; x < w; x += postGap) {
+				scene.moveTo(x, sag(x));
+				scene.lineTo(x, sag(x) + h * 0.075);
+			}
+			scene.stroke();
+
+			// Sakura. One dominant bough from the top left, a lighter counterweight
+			// from the top right, and two short limbs lower down. Six equal
+			// systems made a wreath; the asymmetry is what composes the frame.
 			const reach = Math.min(w * 0.13, h * 0.2);
-			branch(20261020, -16, h * 0.01, 0.5, reach, 5, 5, ink, petal);
-			branch(5512077, w + 16, h * 0.03, Math.PI - 0.46, reach * 0.78, 4, 5, ink, petal);
-			branch(884413, -14, h * 0.58, -0.3, reach * 0.52, 2.8, 4, ink, petal);
-			branch(310255, w + 14, h * 0.66, Math.PI + 0.26, reach * 0.46, 2.6, 4, ink, petal);
-			branch(661902, -14, h * 0.27, 0.22, reach * 0.47, 2.7, 4, ink, petal);
-			branch(427718, w + 14, h * 0.43, Math.PI - 0.2, reach * 0.44, 2.5, 4, ink, petal);
+			branch(20261020, -22, h * 0.005, 0.44, reach * 0.95, 9, 5, ink, petal);
+			branch(5512077, w + 22, -h * 0.01, Math.PI - 0.3, reach * 0.86, 7.5, 4, ink, petal);
+			branch(884413, -18, h * 0.55, -0.16, reach * 0.62, 4.2, 4, ink, petal);
+			branch(310255, w + 18, h * 0.47, Math.PI + 0.22, reach * 0.54, 3.6, 4, ink, petal);
+			// The left margin was the emptiest part of the frame once the gate
+			// moved in there, so it gets the heavier pair.
+			branch(991207, -20, h * 0.38, -0.08, reach * 0.66, 4.4, 4, ink, petal);
+			branch(448120, -20, h * 0.82, -0.2, reach * 0.56, 3.8, 4, ink, petal);
+			branch(773041, w + 20, h * 0.86, Math.PI + 0.14, reach * 0.5, 3.4, 4, ink, petal);
+
+			// The wider grove only where there is margin for it. On a tablet the
+			// reading column runs nearly edge to edge, and blossom belongs behind
+			// the text, not across it.
+			if (w >= 1300) {
+				branch(736401, -20, h * 0.34, 0.04, reach * 0.46, 3.2, 3, ink, petal);
+				branch(520118, w + 20, h * 0.6, Math.PI + 0.04, reach * 0.42, 2.8, 3, ink, petal);
+				branch(90210, w + 20, h * 0.77, Math.PI - 0.1, reach * 0.4, 3, 3, ink, petal);
+				// More boughs from the edges, never a trunk standing in the page:
+				// the trees live outside the frame and reach in.
+				branch(840217, -22, h * 0.7, -0.06, reach * 0.44, 3, 3, ink, petal);
+				branch(781103, w + 22, h * 0.85, Math.PI + 0.05, reach * 0.36, 2.6, 3, ink, petal);
+			}
 
 			scene.globalAlpha = 1;
 		};
@@ -334,59 +676,658 @@
 			spin: 0.6 + Math.random() * 1.4,
 			flip: Math.random() * Math.PI * 2,
 			tone: Math.random() < 0.17 ? 1 : 0,
+			landed: 0,
+			afloat: 0,
+			float: 1,
 		});
+
+		/**
+		 * One torii. Posts splay outward at the foot, the nuki runs through
+		 * them, and the kasagi on top dips through the middle and lifts at both
+		 * ends — the shallow U that makes it read as a gate rather than an 'n'.
+		 */
+		const gate = (
+			ctx: CanvasRenderingContext2D,
+			cx: number,
+			footY: number,
+			half: number,
+			tall: number,
+		) => {
+			const topY = footY - tall;
+			// Thicker posts, and a kasagi that overhangs less: it used to reach
+			// 1.22 half-widths while the posts stood at 0.82, so a third of the
+			// beam floated past the last thing holding it up.
+			const post = tall * 0.064;
+			ctx.beginPath();
+			// The posts run up INTO the beams. They used to start at 0.17, but
+			// the underside of the kasagi curves up to about 0.06 out at the
+			// post line, so there was a visible gap between head and body.
+			ctx.moveTo(cx - half * 0.86 - post * 0.5, topY - tall * 0.02);
+			ctx.lineTo(cx - half * 0.86 + post * 0.5, topY - tall * 0.02);
+			ctx.lineTo(cx - half * 0.92 + post * 0.6, footY);
+			ctx.lineTo(cx - half * 0.92 - post * 0.6, footY);
+			ctx.closePath();
+			ctx.fill();
+			ctx.beginPath();
+			ctx.moveTo(cx + half * 0.86 - post * 0.5, topY - tall * 0.02);
+			ctx.lineTo(cx + half * 0.86 + post * 0.5, topY - tall * 0.02);
+			ctx.lineTo(cx + half * 0.92 + post * 0.6, footY);
+			ctx.lineTo(cx + half * 0.92 - post * 0.6, footY);
+			ctx.closePath();
+			ctx.fill();
+			// Nuki, pulled up closer to the beams above it, and thicker. The gap
+			// between the head of the gate and this beam was reading as a break
+			// in the structure rather than as the opening it is.
+			ctx.fillRect(cx - half * 1.52, topY + tall * 0.265, half * 3.04, post * 1.05);
+			// Gakuzuka: the strut between nuki and shimaki. At post*0.8 wide it
+			// was about nine pixels and effectively invisible, which is what left
+			// the space looking empty.
+			ctx.fillRect(cx - post * 0.62, topY + tall * 0.1, post * 1.24, tall * 0.19);
+			ctx.beginPath();
+			ctx.moveTo(cx - half * 2.1, topY - tall * 0.085);
+			ctx.quadraticCurveTo(cx, topY + tall * 0.125, cx + half * 2.1, topY - tall * 0.085);
+			ctx.lineTo(cx + half * 2.1, topY + tall * 0.008);
+			ctx.quadraticCurveTo(cx, topY + tall * 0.2, cx - half * 2.1, topY + tall * 0.008);
+			ctx.closePath();
+			ctx.fill();
+			ctx.beginPath();
+			ctx.moveTo(cx - half * 1.78, topY + tall * 0.022);
+			ctx.quadraticCurveTo(cx, topY + tall * 0.185, cx + half * 1.78, topY + tall * 0.022);
+			ctx.lineTo(cx + half * 1.78, topY + tall * 0.062);
+			ctx.quadraticCurveTo(cx, topY + tall * 0.225, cx - half * 1.78, topY + tall * 0.062);
+			ctx.closePath();
+			ctx.fill();
+		};
+
+		/** One band of mist: hatch lines stacked up, tapering from the middle. */
+		const mist = (rand: () => number): Streak[] => {
+			const rows = 9 + Math.floor(rand() * 7);
+			const out: Streak[] = [];
+			for (let i = 0; i < rows; i++) {
+				const across = i / (rows - 1) - 0.5;
+				out.push({
+					off: rand(),
+					// Taper, with noise on top so the silhouette is not a lens.
+					len: Math.max(0.12, 1 - Math.abs(across) * 1.75) * (0.72 + rand() * 0.42),
+					rise: across * (rows * 2.6),
+					breathe: 0.00007 + rand() * 0.00013,
+					weight: 2.2 + rand() * 2.6,
+				});
+			}
+			return out;
+		};
+
+		/**
+		 * Everything that drifts is laid out once, from one fixed seed, so a
+		 * resize never rearranges the sky — same discipline as the still scene.
+		 */
+		const populate = () => {
+			const rand = seeded(90210);
+
+			stars = Array.from({ length: 54 }, () => ({
+				x: rand() * w,
+				y: rand() * h * 0.62,
+				r: 0.55 + rand() * 0.95,
+				base: 0.14 + rand() * 0.4,
+				speed: 0.0007 + rand() * 0.0023,
+				phase: rand() * Math.PI * 2,
+			}));
+
+			// Mist bands across the top of the frame. Each one is a stack of
+			// horizontal hatch lines — longest through the middle, tapering out
+			// top and bottom — which is how the woodblock prints draw mist, and
+			// it never resolves into an oval the way stacked ellipses do.
+			clouds = Array.from({ length: 4 }, (_, i) => ({
+				x: (i / 4) * (w * 1.7) - w * 0.35,
+				y: h * (0.05 + rand() * 0.12),
+				w: w * (0.3 + rand() * 0.34),
+				drift: 0.1 + rand() * 0.2,
+				tone: 0.55 + rand() * 0.45,
+				streaks: mist(rand),
+			}));
+
+			// The moon's track on the water. Real moonlight on a lake is not a
+			// band of light — it is a scatter of small mirrors, one per wave
+			// face, packed tight near the far shore and spreading apart towards
+			// the viewer. Laying them out once and only animating their glint is
+			// what keeps it cheap.
+			// Aurora curtains. Four of them, each on its own slow period, so the
+			// band never returns to a shape it held — same rule as everything
+			// else that moves here.
+			aurora = Array.from({ length: 4 }, (_, i) => ({
+				// Higher and shallower than the first attempt: a curtain that
+				// hangs a quarter of the way down the frame is standing next to
+				// you, and aurora is 100km away.
+				base: h * (0.035 + i * 0.032 + rand() * 0.02),
+				amp: h * (0.012 + rand() * 0.02),
+				span: h * (0.045 + rand() * 0.07),
+				speed: 0.00005 + rand() * 0.00009,
+				phase: rand() * Math.PI * 2,
+				// Green low, violet high: that is the order real aurora comes in,
+				// oxygen below and nitrogen above.
+				cold: i < 2 ? 1 : 0,
+				weight: 0.55 + rand() * 0.45,
+			}));
+
+			swell = Array.from({ length: 5 }, (_, i) => ({
+				at: i / 5,
+				speed: 0.000022 + rand() * 0.000016,
+				phase: rand() * Math.PI * 2,
+				weight: 0.6 + rand() * 0.5,
+			}));
+
+			moonlight = Array.from({ length: 84 }, () => ({
+				// Biased towards the horizon, where the wave faces crowd.
+				depth: Math.pow(rand(), 0.72),
+				lateral: (rand() * 2 - 1) * (0.45 + rand() * 0.55),
+				phase: rand() * Math.PI * 2,
+				speed: 0.0006 + rand() * 0.0024,
+				len: 0.4 + rand() * 0.85,
+				weight: 0.55 + rand() * 0.95,
+			}));
+		};
+
+		/** Stars, twinkling on their own timers. Night only. */
+		const drawStars = (t: number) => {
+			if (mix < 0.01) return;
+			sky.fillStyle = NIGHT.ink;
+			for (const s of stars) {
+				sky.globalAlpha = mix * s.base * (0.5 + 0.5 * Math.sin(t * s.speed + s.phase));
+				sky.beginPath();
+				sky.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+				sky.fill();
+			}
+		};
+
+		/**
+		 * Aurora, night only. Each curtain is one filled band between two
+		 * wandering edges, lit by a vertical gradient that fades out top and
+		 * bottom so it has no outline — an aurora with a visible edge is a
+		 * ribbon, not a light. The vertical striations are the giveaway detail:
+		 * the curtain is charged particles following field lines, so it hangs in
+		 * strands rather than washing evenly.
+		 */
+		const drawAurora = (t: number) => {
+			if (mix < 0.02) return;
+			// 16px segments. The first version stepped by w/28 — about 51px — so
+			// every curve came out as a chain of long straight runs, which is
+			// what made it read as torn polygons rather than light.
+			//
+			// Dropping to 12 looked like it cost 8600 "canvas ops" a frame, but
+			// that count weighted a lineTo the same as a fill. Nearly all of the
+			// increase was lineTo, which only appends a point; fill and stroke,
+			// which actually rasterise, stayed around 530 a frame either way.
+			const step = 16;
+			for (const c of aurora) {
+				const tint = c.cold ? '126 214 176' : '168 142 220';
+				const edge = (x: number) =>
+					c.base +
+					Math.sin(x * 0.0041 + t * c.speed * 11 + c.phase) * c.amp +
+					Math.sin(x * 0.0017 - t * c.speed * 7 + c.phase * 1.7) * c.amp * 0.62;
+				const foot = (x: number) =>
+					edge(x) + c.span * (0.58 + 0.42 * Math.sin(x * 0.0029 + c.phase * 2.1));
+
+				const wash = sky.createLinearGradient(0, c.base - c.amp, 0, c.base + c.span);
+				const peak = (mix * 0.062 * c.weight).toFixed(4);
+				wash.addColorStop(0, `rgb(${tint} / 0)`);
+				wash.addColorStop(0.3, `rgb(${tint} / ${peak})`);
+				wash.addColorStop(1, `rgb(${tint} / 0)`);
+				sky.globalAlpha = 1;
+				sky.fillStyle = wash;
+				sky.beginPath();
+				for (let x = -40; x <= w + 40; x += step) {
+					if (x === -40) sky.moveTo(x, edge(x));
+					else sky.lineTo(x, edge(x));
+				}
+				for (let x = w + 40; x >= -40; x -= step) sky.lineTo(x, foot(x));
+				sky.closePath();
+				sky.fill();
+
+				// Strands along the field lines.
+				sky.strokeStyle = `rgb(${tint})`;
+				sky.lineWidth = 1;
+				sky.beginPath();
+				for (let x = -20; x <= w + 20; x += step * 1.3) {
+					const top = edge(x);
+					sky.moveTo(x, top);
+					sky.lineTo(x, top + (foot(x) - top) * (0.45 + 0.4 * Math.sin(x * 0.02 + c.phase)));
+				}
+				sky.globalAlpha = mix * 0.03 * c.weight;
+				sky.stroke();
+			}
+			sky.globalAlpha = 1;
+		};
+
+		/**
+		 * Swell on the lake, built like the aurora: soft bands with no edge,
+		 * travelling in perspective toward the viewer.
+		 *
+		 * There were drawn waves here before and they were cut, because they
+		 * were stroked sine curves — hard lines that popped in and out as they
+		 * wrapped. A filled band under a vertical gradient has no outline to
+		 * pop, and fading it at both ends of its run removes the wrap entirely.
+		 */
+		const drawSwell = (t: number) => {
+			const line = waterY();
+			const deep = h - line;
+			if (deep <= 6) return;
+			const slipX = waterSlipX();
+			const slipY = waterSlipY();
+			const step = 20;
+			// By day the crests are darker than the water, by night lighter than
+			// it: a wave face catches the sky, and the sky is the bright thing
+			// at noon and the dark thing at midnight.
+			const crest = blend('#6f8fa6', '#e7ecf6', mix).replace('rgb(', '').replace(')', '');
+			sky.save();
+			sky.beginPath();
+			sky.rect(-PAD, line + slipY, w + PAD * 2, h - line + PAD * 2);
+			sky.clip();
+			for (const sw of swell) {
+				const travel = (((sw.at + t * sw.speed) % 1) + 1) % 1;
+				// Squared, so bands crowd at the far shore and open up near.
+				const down = travel * travel;
+				const y0 = line + down * deep + slipY;
+				const thick = deep * (0.018 + down * 0.055) * sw.weight;
+				const fade = Math.min(1, travel * 6, (1 - travel) * 3);
+				if (fade <= 0.01) continue;
+				const ride = (x: number) =>
+					Math.sin(x * 0.0058 + t * 0.0009 + sw.phase) * thick * 0.55 +
+					Math.sin(x * 0.0022 - t * 0.0006 + sw.phase * 1.6) * thick * 0.4;
+				const wash = sky.createLinearGradient(0, y0 - thick, 0, y0 + thick * 2);
+				const a = (lerp(0.12, 0.1, mix) * sw.weight * fade).toFixed(4);
+				wash.addColorStop(0, `rgb(${crest} / 0)`);
+				wash.addColorStop(0.45, `rgb(${crest} / ${a})`);
+				wash.addColorStop(1, `rgb(${crest} / 0)`);
+				sky.globalAlpha = 1;
+				sky.fillStyle = wash;
+				sky.beginPath();
+				for (let x = -30; x <= w + 30; x += step) {
+					const y = y0 + ride(x);
+					if (x === -30) sky.moveTo(x + slipX, y);
+					else sky.lineTo(x + slipX, y);
+				}
+				for (let x = w + 30; x >= -30; x -= step) {
+					sky.lineTo(x + slipX, y0 + thick * 1.15 + ride(x));
+				}
+				sky.closePath();
+				sky.fill();
+			}
+			sky.restore();
+		};
+
+		/** A meteor every half minute or so, night only, left to right. */
+		const drawMeteor = () => {
+			if (mix < 0.25) {
+				meteor.on = false;
+				return;
+			}
+			if (!meteor.on) {
+				if (Math.random() > 0.0022) return;
+				const speed = 9 + Math.random() * 6;
+				meteor.on = true;
+				meteor.x = w * (0.08 + Math.random() * 0.5);
+				meteor.y = h * (0.04 + Math.random() * 0.18);
+				meteor.vx = speed;
+				meteor.vy = speed * (0.22 + Math.random() * 0.3);
+				meteor.life = 1;
+			}
+			meteor.x += meteor.vx;
+			meteor.y += meteor.vy;
+			meteor.life -= 0.021;
+			if (meteor.life <= 0 || meteor.x > w + 80) {
+				meteor.on = false;
+				return;
+			}
+			const tailX = meteor.x - meteor.vx * 9;
+			const tailY = meteor.y - meteor.vy * 9;
+			const trail = sky.createLinearGradient(tailX, tailY, meteor.x, meteor.y);
+			trail.addColorStop(0, 'rgb(231 236 246 / 0)');
+			trail.addColorStop(1, `rgb(231 236 246 / ${(mix * meteor.life * 0.7).toFixed(3)})`);
+			sky.globalAlpha = 1;
+			sky.strokeStyle = trail;
+			sky.lineWidth = 1.5;
+			sky.beginPath();
+			sky.moveTo(tailX, tailY);
+			sky.lineTo(meteor.x, meteor.y);
+			sky.stroke();
+		};
+
+		/**
+		 * Cloud banks crossing in front of the mountain, carried by the wind.
+		 * A bank that re-enters at the height and width it left at makes the
+		 * whole sky a visible loop, so each one is rebuilt out of sight.
+		 */
+		const reshape = (c: Cloud) => {
+			c.y = h * (0.04 + Math.random() * 0.15);
+			c.w = w * (0.28 + Math.random() * 0.36);
+			c.drift = 0.08 + Math.random() * 0.22;
+			c.tone = 0.5 + Math.random() * 0.5;
+			c.streaks = mist(Math.random);
+		};
+
+		const drawClouds = (t: number, wind: number, ink: string) => {
+			sky.strokeStyle = ink;
+			sky.lineCap = 'round';
+			for (const c of clouds) {
+				// A band crosses the entire frame before it is rebuilt, and it is
+				// rebuilt only once it is completely off the edge.
+				c.x += c.drift + wind * 0.75;
+				if (c.x - c.w > w) {
+					c.x = -c.w;
+					reshape(c);
+				}
+				if (c.x + c.w * 2 < 0) {
+					c.x = w + c.w;
+					reshape(c);
+				}
+				for (const st of c.streaks) {
+					// Each line slides on its own very slow cycle, so the band
+					// keeps reshaping itself while it crosses.
+					const slide = Math.sin(t * st.breathe + st.off * 11) * c.w * 0.07;
+					const half = (c.w * st.len) / 2;
+					const cx = c.x + c.w * 0.5 + (st.off - 0.5) * c.w * 0.2 + slide;
+					sky.globalAlpha = c.tone * lerp(0.05, 0.042, mix) * (0.35 + st.len * 0.65);
+					sky.lineWidth = st.weight;
+					sky.beginPath();
+					sky.moveTo(cx - half, c.y + st.rise);
+					sky.lineTo(cx + half, c.y + st.rise);
+					sky.stroke();
+				}
+			}
+			sky.lineCap = 'butt';
+		};
+
+		/** A flock crossing the upper sky now and then, wings beating. Day only. */
+		const drawBirds = (t: number, wind: number, ink: string) => {
+			if (mix > 0.72) {
+				flock.on = false;
+				return;
+			}
+			if (!flock.on) {
+				if (Math.random() > 0.0014) return;
+				flock.on = true;
+				flock.dir = Math.random() < 0.5 ? 1 : -1;
+				flock.x = flock.dir > 0 ? -70 : w + 70;
+				flock.y = h * (0.1 + Math.random() * 0.24);
+				flock.speed = 0.85 + Math.random() * 0.8;
+				flock.birds = Array.from({ length: 3 + Math.floor(Math.random() * 4) }, (_, i) => ({
+					lag: i * (13 + Math.random() * 11),
+					lift: (i % 2 ? 1 : -1) * (4 + Math.random() * 9),
+					flap: Math.random() * Math.PI * 2,
+				}));
+			}
+			flock.x += flock.speed * flock.dir + wind * 0.5;
+			if (flock.x < -200 || flock.x > w + 200) {
+				flock.on = false;
+				return;
+			}
+			sky.globalAlpha = (1 - mix) * 0.3;
+			sky.strokeStyle = ink;
+			sky.lineWidth = 1.3;
+			for (const b of flock.birds) {
+				const bx = flock.x - b.lag * flock.dir;
+				const by = flock.y + b.lift + Math.sin(t * 0.0019 + b.flap) * 3;
+				const beat = Math.sin(t * 0.0085 + b.flap) * 3.3;
+				sky.beginPath();
+				sky.moveTo(bx - 5.5, by + beat * 0.4);
+				sky.quadraticCurveTo(bx - 2.2, by - beat, bx, by);
+				sky.quadraticCurveTo(bx + 2.2, by - beat, bx + 5.5, by + beat * 0.4);
+				sky.stroke();
+			}
+		};
+
+		/**
+		 * The moon's track on the water.
+		 *
+		 * The old version was fifteen horizontal bands fanning out from under
+		 * the moon, which is the shape people draw from memory and not the one
+		 * water makes. What actually happens is that every wave face tilted the
+		 * right way throws back a piece of the disc, so the track is hundreds of
+		 * small glints: dense and nearly continuous at the far shore, sparse and
+		 * long near the viewer, brightest on the axis and dying off to the sides.
+		 * Each glint has its own flicker, because each wave face is its own
+		 * mirror turning in and out of alignment.
+		 */
+		const drawMoonTrack = (t: number, wind: number) => {
+			const line = waterY();
+			const deep = h - line;
+			if (deep <= 2) return;
+			const { x: orbX, r: orbR } = orb();
+			// A chop widens the track and shortens each glint: rougher water
+			// scatters the same light over more of the surface.
+			const chop = 1 + Math.abs(wind) * 1.2;
+			const slipX = waterSlipX();
+			const slipY = waterSlipY();
+
+			// By day the same mechanism throws back the sun instead, so the track
+			// is red on pale water — the hinomaru disc, broken on the surface.
+			const glintInk = blend(DAY.orb, NIGHT.orb, mix);
+			// Everything below belongs to the water, so it is clipped to the
+			// water. The wash at the foot of the track is drawn from a radial
+			// centred ON the waterline, so without this a third of it spills
+			// above the surface and up the mountain.
+			sky.save();
+			sky.beginPath();
+			sky.rect(-PAD, line + slipY, w + PAD * 2, h - line + PAD * 2);
+			sky.clip();
+			sky.strokeStyle = glintInk;
+			sky.lineCap = 'round';
+			for (const f of moonlight) {
+				const down = f.depth * f.depth;
+				const y = line + 2 + down * (deep - 2) + slipY;
+				// The wedge: narrow at the horizon, open towards the viewer.
+				const spread = orbR * (0.28 + f.depth * 2.3) * chop;
+				const beat =
+					0.5 + 0.5 * Math.sin(t * f.speed + f.phase) + 0.22 * Math.sin(t * f.speed * 2.7 + f.phase * 1.9);
+				const glint = Math.max(0, Math.min(1.2, beat));
+				// This used to be one shared frequency for all 84 glints, so the
+				// whole track returned to the same arrangement every ~15s — the
+				// loop you could see. Each glint drifts on its own period now.
+				const lateral = f.lateral + Math.sin(t * f.speed * 0.31 + f.phase * 2.3) * 0.1 * chop;
+				const fall = Math.max(0, 1 - lateral * lateral);
+				const a = lerp(0.38, 0.62, mix) * fall * fall * glint * (1 - f.depth * 0.22);
+				if (a < 0.012) continue;
+				const half = orbR * f.len * (0.07 + f.depth * 0.3) * (0.55 + 0.5 * glint) / chop;
+				const x = orbX + lateral * spread + slipX;
+				sky.globalAlpha = Math.min(1, a);
+				sky.lineWidth = Math.max(0.8, (0.9 + f.depth * 2) * f.weight);
+				sky.beginPath();
+				sky.moveTo(x - half, y);
+				sky.lineTo(x + half, y);
+				sky.stroke();
+			}
+			sky.lineCap = 'butt';
+
+			// Where the track leaves the far shore it is too dense to resolve,
+			// so that part is a wash rather than glints.
+			const footY = line + slipY;
+			const foot = sky.createRadialGradient(orbX + slipX, footY, 0, orbX + slipX, footY, orbR * 1.7);
+			const wash = glintInk.replace('rgb(', '').replace(')', '');
+			foot.addColorStop(0, `rgb(${wash} / ${lerp(0.1, 0.16, mix).toFixed(3)})`);
+			foot.addColorStop(1, `rgb(${wash} / 0)`);
+			sky.globalAlpha = 1;
+			sky.fillStyle = foot;
+			sky.fillRect(orbX + slipX - orbR * 1.7, footY - orbR * 0.35, orbR * 3.4, orbR * 2.05);
+			sky.restore();
+		};
+
+		/**
+		 * A ring where a petal touched down, flattened because the lake is seen
+		 * at a glancing angle. This is the only thing that disturbs the surface:
+		 * drawn swell on the water read as a repeating pattern, and the still
+		 * sheet is closer to the woodblock prints the scene is after anyway.
+		 */
+		const drawRipples = (ink: string) => {
+			const slipX = waterSlipX();
+			const slipY = waterSlipY();
+			const line = waterY();
+			sky.save();
+			sky.beginPath();
+			sky.rect(-PAD, line + slipY, w + PAD * 2, h - line + PAD * 2);
+			sky.clip();
+			sky.strokeStyle = ink;
+			// Rings where something touched the surface. Flattened, because the
+			// lake is seen at a glancing angle.
+			ripples = ripples.filter((r) => r.life > 0);
+			for (const r of ripples) {
+				r.r += r.push;
+				r.push *= 0.985;
+				r.life -= 0.012;
+				const fade = Math.max(0, r.life);
+				for (const ring of [1, 0.62]) {
+					sky.globalAlpha = lerp(0.22, 0.3, mix) * fade * ring;
+					sky.lineWidth = 1;
+					sky.beginPath();
+					sky.ellipse(r.x + slipX, r.y + slipY, r.r * ring, r.r * ring * 0.26, 0, 0, Math.PI * 2);
+					sky.stroke();
+				}
+			}
+			sky.restore();
+		};
 
 		const resize = () => {
 			const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
 			w = window.innerWidth;
 			h = window.innerHeight;
 			for (const c of [sceneCanvas, petalCanvas]) {
-				c.width = Math.round(w * ratio);
-				c.height = Math.round(h * ratio);
+				c.width = Math.round((w + PAD * 2) * ratio);
+				c.height = Math.round((h + PAD * 2) * ratio);
 			}
-			scene.setTransform(ratio, 0, 0, ratio, 0, 0);
-			sky.setTransform(ratio, 0, 0, ratio, 0, 0);
-			petals = Array.from({ length: Math.max(14, Math.min(44, Math.round(w / 30))) }, () =>
+			// Origin at the viewport's top-left, so every coordinate below is in
+			// viewport space and the padding is simply off-screen headroom.
+			scene.setTransform(ratio, 0, 0, ratio, PAD * ratio, PAD * ratio);
+			sky.setTransform(ratio, 0, 0, ratio, PAD * ratio, PAD * ratio);
+			petals = Array.from({ length: Math.max(24, Math.min(76, Math.round(w / 19))) }, () =>
 				spawn(false),
 			);
+			populate();
 			drawScene();
 		};
 
 		const drawPetals = (t: number) => {
 			const tone = [blend(DAY.petal, NIGHT.petal, mix), blend(DAY.accent, NIGHT.accent, mix)];
+			const ink = blend(DAY.ink, NIGHT.ink, mix);
 			const line = waterY();
-			sky.clearRect(0, 0, w, h);
+			sky.clearRect(-PAD, -PAD, w + PAD * 2, h + PAD * 2);
 
-			// The moon's reflection, broken into ripples. It lives on the animated
-			// canvas so it can shimmer without repainting the whole scene.
-			if (mix > 0.01) {
-				const { x: orbX, r: orbR } = orb();
-				sky.fillStyle = NIGHT.orb;
-				for (let i = 0; i < 15; i++) {
-					const down = i / 15;
-					const y = line + 5 + down * (h - line - 5);
-					const wob = Math.sin(t * 0.0011 + i * 0.85);
-					const len = orbR * 1.5 * (0.32 + 0.68 * (1 - down)) * (0.72 + 0.28 * wob);
-					sky.globalAlpha = mix * 0.34 * (1 - down * 0.72);
-					sky.fillRect(orbX - len / 2 + wob * 5, y, len, 1.7);
-				}
-				sky.globalAlpha = mix * 0.07;
-				for (let i = 0; i < 5; i++) {
-					const y = line + 10 + i * ((h - line) / 5);
-					sky.fillRect(0, y + Math.sin(t * 0.0008 + i) * 1.5, w, 1);
-				}
+			// A gust is a kick to one value that then decays, and everything
+			// downwind of it leans at once.
+			gustAim *= 0.982;
+			if (Math.random() < 0.0045) {
+				gustAim += (Math.random() < 0.5 ? -1 : 1) * (0.45 + Math.random() * 0.9);
 			}
+			gustAim = Math.max(-1.6, Math.min(1.6, gustAim));
+			gust += (gustAim - gust) * 0.055;
+			const wind = windAt(t);
 
+			drawStars(t);
+			drawAurora(t);
+			drawMeteor();
+			drawClouds(t, wind, ink);
+			drawBirds(t, wind, ink);
+
+			// Both live on the animated canvas so the water can shimmer without
+			// repainting the whole scene.
+			drawSwell(t);
+			drawRipples(ink);
+
+			// The posts keep pushing rings out into the lake. The first version
+			// grew and shrank three rings in place, which is a loop by
+			// construction — water does not pulse, it emits and the ring leaves.
+			if (ripples.length < 20 && Math.random() < 0.07) {
+				const foot = gatePos();
+				const side = Math.random() < 0.5 ? -1 : 1;
+				ripples.push({
+					x: foot.gx + side * foot.half * 0.92 + (Math.random() - 0.5) * 7,
+					y: foot.footY + (Math.random() - 0.5) * 4,
+					r: foot.half * 0.14,
+					life: 0.85 + Math.random() * 0.15,
+					push: 0.3 + Math.random() * 0.35,
+				});
+			}
+			drawMoonTrack(t, wind);
+
+			const slipX = waterSlipX();
+			const slipY = waterSlipY();
 			for (const p of petals) {
+				// Already down: it rides the surface, turning flat to the viewer,
+				// carried along by the same wind, until it drifts off the edge or
+				// the water takes it.
+				if (p.afloat) {
+					p.float -= 0.0028;
+					p.x += wind * 0.85 + 0.06;
+					if (p.float <= 0 || p.x < -40 || p.x > w + 40) {
+						Object.assign(p, spawn(true));
+						continue;
+					}
+					const bob =
+						line +
+						Math.pow(p.depth, 1.25) * (h - line) * 0.88 +
+						Math.sin(t * 0.0017 + p.phase) * 1.7;
+					const size = 3.5 + p.depth * 6.5;
+					sky.save();
+					sky.translate(p.x + slipX, bob + slipY);
+					// Squashed almost flat: it is lying on the surface, not facing
+					// the viewer.
+					sky.scale(1, 0.26);
+					sky.rotate(Math.sin(t * 0.0004 + p.phase) * 0.5);
+					sky.globalAlpha = (0.3 + p.depth * 0.4) * Math.min(1, p.float * 2.2);
+					sky.fillStyle = tone[p.tone];
+					sky.beginPath();
+					sky.moveTo(0, -size);
+					sky.bezierCurveTo(size * 0.78, -size * 0.55, size * 0.62, size * 0.62, 0, size);
+					sky.bezierCurveTo(-size * 0.62, size * 0.62, -size * 0.78, -size * 0.55, 0, -size);
+					sky.closePath();
+					sky.fill();
+					sky.restore();
+					continue;
+				}
+
 				p.y += 0.22 + p.depth * 0.75;
 				p.flip += 0.012 * p.spin;
+				// Carried sideways by the gust, and wrapped so a long blow does
+				// not empty one side of the screen.
+				p.x += wind * (0.45 + p.depth * 1.3);
+				// Shoved aside by the pointer. The nearer petals move more, which
+				// is what sells the depth.
+				const away = p.x - pointerX;
+				const below = p.y - pointerY;
+				const reach2 = away * away + below * below;
+				if (reach2 < 15876 && reach2 > 1) {
+					const dist = Math.sqrt(reach2);
+					const shove = (1 - dist / 126) * (1.4 + p.depth * 2.8);
+					p.x += (away / dist) * shove;
+					p.y += (below / dist) * shove * 0.5;
+				}
+				if (p.x < -40) p.x = w + 40;
+				if (p.x > w + 40) p.x = -40;
 				if (p.y > h + 24) {
 					Object.assign(p, spawn(true));
 					continue;
 				}
-				// At night the petals settle onto the water instead of sailing over it.
-				const sink = mix > 0.01 && p.y > line ? Math.max(0, 1 - (p.y - line) / 55) : 1;
-				if (sink <= 0) continue;
+				// Where THIS petal meets the water. They all used to land on
+				// `line`, which is the far shore, so every floating petal ended
+				// up in one row at the top of the lake. A nearer petal (higher
+				// depth) meets the surface further down the frame.
+				const surf = line + Math.pow(p.depth, 1.25) * (h - line) * 0.88;
+				if (!p.landed && p.y > surf) {
+					p.landed = 1;
+					p.afloat = 1;
+					p.float = 1;
+					p.x += Math.sin(t * 0.0006 + p.phase) * p.sway;
+					p.y = surf;
+					if (ripples.length < 20) {
+						ripples.push({
+							x: p.x,
+							y: surf,
+							r: 1.5,
+							life: 1,
+							push: 0.5 + p.depth * 0.7,
+						});
+					}
+					continue;
+				}
+				const sink = 1;
 
 				const x = p.x + Math.sin(t * 0.0006 + p.phase) * p.sway;
 				const size = 3.5 + p.depth * 6.5;
@@ -405,6 +1346,7 @@
 				sky.fill();
 				sky.restore();
 			}
+
 			sky.globalAlpha = 1;
 		};
 
@@ -455,6 +1397,59 @@
 		resize();
 		drawPetals(0);
 		window.addEventListener('resize', resize);
+
+		if (!still) {
+			window.addEventListener(
+				'pointermove',
+				(event) => {
+					const move = event as PointerEvent;
+					pointerX = move.clientX;
+					pointerY = move.clientY;
+					tiltX = pointerX / w - 0.5;
+					tiltY = pointerY / h - 0.5;
+					queueParallax();
+				},
+				{ passive: true },
+			);
+			// A click raises a gust, blowing away from where it landed. It feeds
+			// the same `gust` value as the weather does, so the petals and the
+			// mist answer it together instead of it being its own effect.
+			window.addEventListener('pointerdown', (event) => {
+				const hit = event as PointerEvent;
+				const side = hit.clientX / w - 0.5 >= 0 ? 1 : -1;
+				gustAim = Math.max(-1.6, Math.min(1.6, gustAim + side * 1.15));
+
+				// Below the waterline the click lands IN the lake and knocks a
+				// ring into it; above it the click shakes the branches and a
+				// handful of blossom comes loose.
+				if (hit.clientY > waterY()) {
+					if (ripples.length < 20) {
+						ripples.push({ x: hit.clientX, y: hit.clientY, r: 2, life: 1, push: 1.5 });
+					}
+					return;
+				}
+				const loose = Math.min(petals.length, 9);
+				for (let i = 0; i < loose; i++) {
+					const p = petals[Math.floor(Math.random() * petals.length)];
+					p.x = hit.clientX + (Math.random() - 0.5) * 70;
+					p.y = hit.clientY - Math.random() * 48;
+					p.phase = Math.random() * Math.PI * 2;
+					p.landed = 0;
+				}
+			});
+			window.addEventListener('pointerleave', () => {
+				pointerX = -9999;
+				pointerY = -9999;
+			});
+			window.addEventListener(
+				'scroll',
+				() => {
+					scrolled = window.scrollY;
+					queueParallax();
+				},
+				{ passive: true },
+			);
+		}
 		document.addEventListener('visibilitychange', () => (document.hidden ? halt() : run()));
 		run();
 	}
