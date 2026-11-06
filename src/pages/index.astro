@@ -48,7 +48,7 @@ const cves = posts.filter((p) => p.data.kind === 'cve').length;
 			<p class="label">latest</p>
 			<h2>Findings and writeups</h2>
 			<ul class="grid">
-				{posts.slice(0, 4).map((post) => <li><PostCard post={post} /></li>)}
+				{posts.slice(0, 6).map((post) => <li><PostCard post={post} /></li>)}
 			</ul>
 		</div>
 	</section>
