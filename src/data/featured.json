@@ -1,5 +1,6 @@
 {
   "pin": [
+    "CVE-2026-118569",
     "CVE-2026-112071",
     "CVE-2026-113468",
     "CVE-2026-107268",
@@ -32,6 +33,13 @@
     "Enc2Health": "Encrypted query processing for cloud-native health data."
   },
   "fallback": [
+    {
+      "name": "CVE-2026-118569",
+      "description": "Fasttoggle for Drupal let any editor publish, promote or pin every node on the site",
+      "html_url": "https://github.com/yuwkaaa/CVE-2026-118569",
+      "language": "Python",
+      "stargazers_count": 0
+    },
     {
       "name": "CVE-2026-112071",
       "description": "Unauthenticated order cancellation in TYPO3 EXT:shop",
