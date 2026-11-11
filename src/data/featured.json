@@ -1,5 +1,7 @@
 {
   "pin": [
+    "CVE-2026-125753",
+    "CVE-2026-123618",
     "CVE-2026-118569",
     "CVE-2026-118570",
     "CVE-2026-112071",
@@ -34,6 +36,20 @@
     "Enc2Health": "Encrypted query processing for cloud-native health data."
   },
   "fallback": [
+    {
+      "name": "CVE-2026-125753",
+      "description": "Unauthenticated path traversal out of the blob container in ABP Framework",
+      "html_url": "https://github.com/yuwkaaa/CVE-2026-125753",
+      "language": "C#",
+      "stargazers_count": 0
+    },
+    {
+      "name": "CVE-2026-123618",
+      "description": "ABP's external login path skips the pre-sign-in gate and the second factor",
+      "html_url": "https://github.com/yuwkaaa/CVE-2026-123618",
+      "language": "C#",
+      "stargazers_count": 0
+    },
     {
       "name": "CVE-2026-118569",
       "description": "Fasttoggle for Drupal let any editor publish, promote or pin every node on the site",
